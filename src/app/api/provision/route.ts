@@ -50,9 +50,16 @@ function validRepositoryName(value: string): boolean {
   return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(value);
 }
 
+function validTheme(value: unknown): value is "editorial" | "minimal" | "creative" | "academic" {
+  return value === "editorial" || value === "minimal" || value === "creative" || value === "academic";
+}
+
 function extractServiceKey(payload: unknown): string | undefined {
   if (payload && typeof payload === "object") {
     const record = payload as Record<string, unknown>;
+    // The current Management API returns `api_key` for a revealed secret key;
+    // older API versions returned a legacy `service_role` shape. Support both.
+    if (typeof record.api_key === "string") return record.api_key;
     if (typeof record.secret === "string") return record.secret;
     if (typeof record.service_role === "string") return record.service_role;
     for (const value of Object.values(record)) {
@@ -73,11 +80,13 @@ function extractServiceKey(payload: unknown): string | undefined {
   return undefined;
 }
 
-async function verifyProviders(githubToken: string, supabaseToken: string, vercelToken: string, vercelOAuth = false) {
+async function verifyProviders(githubToken: string, supabaseToken: string, vercelToken: string) {
   const [githubResponse, supabaseResponse, vercelResponse] = await Promise.all([
     fetch("https://api.github.com/user", { headers: githubHeaders(githubToken) }),
     fetch("https://api.supabase.com/v1/organizations", { headers: bearerHeaders(supabaseToken) }),
-    fetch(vercelOAuth ? "https://api.vercel.com/login/oauth/userinfo" : "https://api.vercel.com/v2/user", { headers: bearerHeaders(vercelToken) }),
+    // Verify against the same REST API used for project creation. OIDC userinfo
+    // alone only proves sign-in; it does not prove deployment access.
+    fetch("https://api.vercel.com/v2/user", { headers: bearerHeaders(vercelToken) }),
   ]);
 
   if (!githubResponse.ok) throw new Error("GitHub token verification failed.");
@@ -117,18 +126,28 @@ async function waitForSupabaseProject(ref: string, token: string): Promise<void>
 }
 
 type OAuthToken = { accessToken: string; refreshToken?: string; expiresAt?: number };
+type Repository = { htmlUrl: string; id: number; defaultBranch?: string };
+type ResumeJob = {
+  projectRef: string;
+  databasePassword: string;
+  projectName: string;
+  repository?: Repository;
+  vercelProjectId?: string;
+};
 function oauthToken(request: NextRequest, provider: Provider): string | undefined {
   return decrypt<OAuthToken>(request.cookies.get(cookieName(provider))?.value)?.accessToken;
 }
 
 export async function POST(request: NextRequest) {
-  let resumableJob: { projectRef: string; databasePassword: string; projectName: string } | undefined;
+  let resumableJob: ResumeJob | undefined;
   try {
     const body = await request.json();
     const githubToken = requireString(body.githubToken || oauthToken(request, "github"), "GitHub authorization");
     const supabaseToken = requireString(body.supabaseToken || oauthToken(request, "supabase"), "Supabase authorization");
-    const oauthVercelToken = oauthToken(request, "vercel");
-    const vercelToken = requireString(body.vercelToken || oauthVercelToken, "Vercel authorization");
+    // Vercel Sign in with Vercel proves identity but does not universally grant
+    // the project/deployment permissions this installer needs. Require the
+    // deployment token that was explicitly verified in the wizard.
+    const vercelToken = requireString(body.vercelToken, "Vercel deployment token");
     const githubRepoName = requireString(body.githubRepoName, "GitHub repository name");
     const name = requireString(body.name, "Researcher name");
     const title = requireString(body.title, "Professional title");
@@ -145,19 +164,21 @@ export async function POST(request: NextRequest) {
     }
 
     const logs = ["Verifying GitHub, Supabase, and Vercel credentials in parallel..."];
-    const { github, organizations } = await verifyProviders(githubToken, supabaseToken, vercelToken, !body.vercelToken && Boolean(oauthVercelToken));
+    const { github, organizations } = await verifyProviders(githubToken, supabaseToken, vercelToken);
     const organizationSlug = typeof body.supabaseOrganizationSlug === "string" && body.supabaseOrganizationSlug.trim()
       ? body.supabaseOrganizationSlug.trim()
       : organizations[0]?.slug || organizations[0]?.id;
     if (!organizationSlug) throw new Error("No Supabase organization is available for this token.");
 
+    const savedJob = decrypt<ResumeJob>(request.cookies.get("__Host-installer-provision")?.value);
     const existingRepo = await fetch(`https://api.github.com/repos/${github.login}/${githubRepoName}`, {
       headers: githubHeaders(githubToken),
     });
-    if (existingRepo.ok) {
+    const resumeRepository = savedJob?.repository;
+    if (existingRepo.ok && !(resumeRepository && savedJob?.projectName === `${githubRepoName}-db`.slice(0, 60))) {
       return noStore({ success: false, error: `Repository '${githubRepoName}' already exists for ${github.login}. Choose a different name.` }, { status: 409 });
     }
-    if (existingRepo.status !== 404) throw new Error("GitHub could not check whether the requested repository name is available.");
+    if (!existingRepo.ok && existingRepo.status !== 404) throw new Error("GitHub could not check whether the requested repository name is available.");
 
     logs.push(`Verified provider access for GitHub account ${github.login}.`);
     logs.push(`Selected Supabase organization ${organizationSlug}.`);
@@ -168,7 +189,6 @@ export async function POST(request: NextRequest) {
       return noStore({ success: true, dryRun: true, logs });
     }
 
-    const savedJob = decrypt<{ projectRef: string; databasePassword: string; projectName: string }>(request.cookies.get("__Host-installer-provision")?.value);
     const authSecret = randomBytes(32).toString("base64url");
     const projectName = `${githubRepoName}-db`.slice(0, 60);
     const regionGroup = ["americas", "emea", "apac"].includes(body.supabaseRegion) ? body.supabaseRegion : "apac";
@@ -192,7 +212,7 @@ export async function POST(request: NextRequest) {
       supabaseProject = await json<{ ref: string }>(supabaseProjectResponse);
       if (!supabaseProject.ref) throw new Error("Supabase did not return a project reference.");
     }
-    resumableJob = { projectRef: supabaseProject.ref, databasePassword, projectName };
+    resumableJob = { ...savedJob, projectRef: supabaseProject.ref, databasePassword, projectName };
     logs.push("Supabase project created. Waiting for database services to become healthy...");
     await waitForSupabaseProject(supabaseProject.ref, supabaseToken);
 
@@ -212,23 +232,30 @@ export async function POST(request: NextRequest) {
     if (!bucketResponse.ok && bucketResponse.status !== 409) throw new Error("Supabase Storage bucket creation failed.");
     logs.push("Supabase database and private media bucket are ready.");
 
-    logs.push("Generating the GitHub repository from the Dhanushworks template...");
-    const generateResponse = await fetch("https://api.github.com/repos/dhanushMindia/dhanushworks-template/generate", {
-      method: "POST",
-      headers: githubHeaders(githubToken),
-      body: JSON.stringify({
-        owner: github.login,
-        name: githubRepoName,
-        description: `Research portfolio — ${researchFocus}`,
-        include_all_branches: false,
-        private: true,
-      }),
-    });
-    if (!generateResponse.ok) {
-      throw new Error(`GitHub template generation failed: ${await providerError(generateResponse)}`);
+    let repository: Repository;
+    if (resumeRepository) {
+      repository = resumeRepository;
+      logs.push("Reusing the repository created by the earlier attempt.");
+    } else {
+      const generateResponse = await fetch("https://api.github.com/repos/dhanushMindia/dhanushworks-template/generate", {
+        method: "POST",
+        headers: githubHeaders(githubToken),
+        body: JSON.stringify({
+          owner: github.login,
+          name: githubRepoName,
+          description: `Research portfolio — ${researchFocus}`,
+          include_all_branches: false,
+          private: true,
+        }),
+      });
+      if (!generateResponse.ok) {
+        throw new Error(`GitHub template generation failed: ${await providerError(generateResponse)}`);
+      }
+      const generated = await json<{ html_url: string; id: number; default_branch?: string }>(generateResponse);
+      repository = { htmlUrl: generated.html_url, id: generated.id, defaultBranch: generated.default_branch };
+      resumableJob = { ...resumableJob, repository };
+      logs.push("Repository generated successfully.");
     }
-    const repository = await json<{ html_url: string; id: number; default_branch?: string }>(generateResponse);
-    logs.push("Repository generated successfully.");
 
     const databaseUrl = `postgresql://postgres:${encodeURIComponent(databasePassword)}@db.${supabaseProject.ref}.supabase.co:5432/postgres`;
     const deploymentUrl = `https://${githubRepoName}.vercel.app`;
@@ -245,26 +272,33 @@ export async function POST(request: NextRequest) {
       ["PROFILE_BIO", researchFocus],
       ["PROFILE_ROLE", title],
       ["PROFILE_FOCUS", researchFocus],
+      ["PROFILE_THEME", validTheme(body.theme) ? body.theme : "editorial"],
       ["SUPABASE_URL", supabaseUrl],
       ["SUPABASE_SERVICE_ROLE_KEY", supabaseServiceKey],
       ["SUPABASE_STORAGE_BUCKET", "portfolio-media"],
     ].map(([key, value]) => ({ key, value, type: "encrypted", target: ["production", "preview", "development"] }));
 
-    logs.push("Creating the Vercel project with encrypted environment variables...");
-    const vercelProjectResponse = await fetch("https://api.vercel.com/v11/projects", {
-      method: "POST",
-      headers: bearerHeaders(vercelToken),
-      body: JSON.stringify({
-        name: githubRepoName,
-        framework: "nextjs",
-        gitRepository: { type: "github", repo: `${github.login}/${githubRepoName}` },
-        environmentVariables,
-      }),
-    });
-    if (!vercelProjectResponse.ok) {
-      throw new Error(`Vercel project creation failed: ${await providerError(vercelProjectResponse)}`);
+    let vercelProjectId = resumableJob.vercelProjectId;
+    if (vercelProjectId) {
+      logs.push("Reusing the Vercel project created by the earlier attempt.");
+    } else {
+      logs.push("Creating the Vercel project with encrypted environment variables...");
+      const vercelProjectResponse = await fetch("https://api.vercel.com/v11/projects", {
+        method: "POST",
+        headers: bearerHeaders(vercelToken),
+        body: JSON.stringify({
+          name: githubRepoName,
+          framework: "nextjs",
+          gitRepository: { type: "github", repo: `${github.login}/${githubRepoName}` },
+          environmentVariables,
+        }),
+      });
+      if (!vercelProjectResponse.ok) {
+        throw new Error(`Vercel project creation failed: ${await providerError(vercelProjectResponse)}`);
+      }
+      vercelProjectId = (await json<{ id: string }>(vercelProjectResponse)).id;
+      resumableJob = { ...resumableJob, vercelProjectId };
     }
-    const vercelProject = await json<{ id: string }>(vercelProjectResponse);
 
     logs.push("Triggering the first production deployment and database initialization...");
     const deploymentResponse = await fetch("https://api.vercel.com/v13/deployments", {
@@ -272,9 +306,9 @@ export async function POST(request: NextRequest) {
       headers: bearerHeaders(vercelToken),
       body: JSON.stringify({
         name: githubRepoName,
-        project: vercelProject.id,
+        project: vercelProjectId,
         target: "production",
-        gitSource: { type: "github", repoId: String(repository.id), ref: repository.default_branch || "main" },
+        gitSource: { type: "github", repoId: String(repository.id), ref: repository.defaultBranch || "main" },
       }),
     });
     if (!deploymentResponse.ok) {
@@ -287,7 +321,7 @@ export async function POST(request: NextRequest) {
       success: true,
       logs,
       deployUrl: deployment.url ? `https://${deployment.url}` : deploymentUrl,
-      repoUrl: repository.html_url,
+      repoUrl: repository.htmlUrl,
       supabaseProjectRef: supabaseProject.ref,
     }));
   } catch (error) {

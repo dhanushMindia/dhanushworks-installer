@@ -21,6 +21,7 @@ export default function InstallerWizard() {
     email: "",
     adminPassword: "",
     githubRepoName: "",
+    theme: "editorial",
     supabaseOrganizationSlug: "",
     supabaseRegion: "apac",
     githubToken: "",
@@ -44,7 +45,7 @@ export default function InstallerWizard() {
   useEffect(() => {
     fetch("/api/oauth/status", { cache: "no-store" })
       .then((response) => response.json())
-      .then((connected) => { if (connected.draft) { const { step: savedStep, ...draft } = connected.draft; setFormData((previous) => ({ ...previous, ...draft })); if (Number.isInteger(savedStep)) setStep(savedStep); } setProviderStatus((previous) => ({ ...previous, github: connected.github ? "AUTHORIZED" : previous.github, supabase: connected.supabase ? "AUTHORIZED" : previous.supabase, vercel: connected.vercel ? "AUTHORIZED" : previous.vercel })); })
+      .then((connected) => { if (connected.draft) { const { step: savedStep, ...draft } = connected.draft; setFormData((previous) => ({ ...previous, ...draft })); if (Number.isInteger(savedStep)) setStep(savedStep); } setProviderStatus((previous) => ({ ...previous, github: connected.github ? "AUTHORIZED" : previous.github, supabase: connected.supabase ? "AUTHORIZED" : previous.supabase })); })
       .catch(() => undefined);
     const query = new URLSearchParams(window.location.search);
     const oauth = query.get("oauth");
@@ -235,6 +236,16 @@ export default function InstallerWizard() {
               </div>
 
               <div>
+                <label className="block text-xs font-mono text-stone-600 uppercase tracking-wider mb-1.5">Portfolio theme</label>
+                <select name="theme" value={formData.theme} onChange={handleInputChange} className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm focus:outline-none focus:border-stone-900">
+                  <option value="editorial">Editorial</option>
+                  <option value="minimal">Minimal</option>
+                  <option value="creative">Creative</option>
+                  <option value="academic">Academic</option>
+                </select>
+              </div>
+
+              <div>
                 <label className="block text-xs font-mono text-stone-600 uppercase tracking-wider mb-1.5">Admin Email</label>
                 <input
                   type="email"
@@ -315,12 +326,16 @@ export default function InstallerWizard() {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {(["github", "supabase", "vercel"] as const).map((provider) => (
+              {(["github", "supabase"] as const).map((provider) => (
                 <button key={provider} onClick={() => preserveDraftForOAuth(provider)} className={`rounded-lg border px-3 py-2 text-center text-xs font-medium ${providerStatus[provider] === "AUTHORIZED" ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-stone-300 text-stone-800 hover:bg-stone-100"}`}>
                   {providerStatus[provider] === "AUTHORIZED" ? `${provider[0].toUpperCase() + provider.slice(1)} connected ✓` : `Connect ${provider[0].toUpperCase() + provider.slice(1)} with OAuth`}
                 </button>
               ))}
             </div>
+
+            <p className="text-xs text-stone-500">
+              Vercel project creation requires a Vercel deployment token. Sign-in OAuth verifies identity, but may not include the project and environment-variable permissions required to create a site.
+            </p>
 
             {oauthNotice && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{oauthNotice}</div>}
             {errorDetails && <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">{errorDetails}</div>}
@@ -343,7 +358,7 @@ export default function InstallerWizard() {
 
               <div>
                 <label className="block text-xs font-mono text-stone-600 uppercase tracking-wider mb-1.5">
-                  Vercel API Token (<span className="text-stone-900 font-semibold">Account Settings &gt; Tokens</span>)
+                  Vercel deployment token (<span className="text-stone-900 font-semibold">Account Settings &gt; Tokens</span>)
                 </label>
                 <input
                   type="password"
@@ -395,7 +410,7 @@ export default function InstallerWizard() {
             <div>
               <h2 className="text-xl font-medium tracking-tight text-stone-900">Credential Verification</h2>
               <p className="text-stone-600 mt-2 text-sm">
-                Test your API tokens against real provider endpoints before initiating deployment. All three tokens are mandatory.
+                Test the connected accounts or deployment tokens against the provider APIs before initiating deployment.
               </p>
             </div>
 
