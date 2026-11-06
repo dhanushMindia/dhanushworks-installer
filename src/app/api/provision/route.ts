@@ -68,11 +68,11 @@ function extractServiceKey(payload: unknown): string | undefined {
   return undefined;
 }
 
-async function verifyProviders(githubToken: string, supabaseToken: string, vercelToken: string) {
+async function verifyProviders(githubToken: string, supabaseToken: string, vercelToken: string, vercelOAuth = false) {
   const [githubResponse, supabaseResponse, vercelResponse] = await Promise.all([
     fetch("https://api.github.com/user", { headers: githubHeaders(githubToken) }),
     fetch("https://api.supabase.com/v1/organizations", { headers: bearerHeaders(supabaseToken) }),
-    fetch("https://api.vercel.com/v2/user", { headers: bearerHeaders(vercelToken) }),
+    fetch(vercelOAuth ? "https://api.vercel.com/login/oauth/userinfo" : "https://api.vercel.com/v2/user", { headers: bearerHeaders(vercelToken) }),
   ]);
 
   if (!githubResponse.ok) throw new Error("GitHub token verification failed.");
@@ -117,7 +117,8 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const githubToken = requireString(body.githubToken || oauthToken(request, "github"), "GitHub authorization");
     const supabaseToken = requireString(body.supabaseToken || oauthToken(request, "supabase"), "Supabase authorization");
-    const vercelToken = requireString(body.vercelToken || oauthToken(request, "vercel"), "Vercel authorization");
+    const oauthVercelToken = oauthToken(request, "vercel");
+    const vercelToken = requireString(body.vercelToken || oauthVercelToken, "Vercel authorization");
     const githubRepoName = requireString(body.githubRepoName, "GitHub repository name");
     const name = requireString(body.name, "Researcher name");
     const title = requireString(body.title, "Professional title");
@@ -134,7 +135,7 @@ export async function POST(request: NextRequest) {
     }
 
     const logs = ["Verifying GitHub, Supabase, and Vercel credentials in parallel..."];
-    const { github, organizations } = await verifyProviders(githubToken, supabaseToken, vercelToken);
+    const { github, organizations } = await verifyProviders(githubToken, supabaseToken, vercelToken, !body.vercelToken && Boolean(oauthVercelToken));
     const organizationSlug = typeof body.supabaseOrganizationSlug === "string" && body.supabaseOrganizationSlug.trim()
       ? body.supabaseOrganizationSlug.trim()
       : organizations[0]?.slug || organizations[0]?.id;
