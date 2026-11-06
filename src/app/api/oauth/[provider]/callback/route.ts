@@ -4,7 +4,10 @@ import { callbackUrl, cookieName, encrypt, stateMatches, type Provider } from "@
 const providers = ["github", "supabase", "vercel"] as const;
 export async function GET(request: NextRequest, { params }: { params: Promise<{ provider: string }> }) {
   const { provider: raw } = await params; const provider = raw as Provider; const error = request.nextUrl.searchParams.get("error"), code = request.nextUrl.searchParams.get("code");
-  const fail = (reason: string) => NextResponse.redirect(new URL(`/?oauth=failed&provider=${encodeURIComponent(provider)}&reason=${encodeURIComponent(reason.slice(0, 180))}`, request.url));
+  const fail = (reason: unknown) => {
+    const safeReason = typeof reason === "string" ? reason : "Provider returned an unexpected authorization error.";
+    return NextResponse.redirect(new URL(`/?oauth=failed&provider=${encodeURIComponent(provider)}&reason=${encodeURIComponent(safeReason.slice(0, 180))}`, request.url));
+  };
   if (!providers.includes(provider)) return fail("Unknown OAuth provider.");
   if (error) return fail(request.nextUrl.searchParams.get("error_description") || error);
   if (!code) return fail("Authorization code was not returned by the provider.");
