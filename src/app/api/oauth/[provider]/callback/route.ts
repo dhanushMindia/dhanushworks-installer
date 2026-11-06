@@ -32,7 +32,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return undefined;
   };
   if (!tokenResponse.ok || !token?.access_token) return fail(safeProviderError(token) || `Token exchange failed (${tokenResponse.status}).`);
-  const identityUrl = provider === "github" ? "https://api.github.com/user" : provider === "supabase" ? "https://api.supabase.com/v1/organizations" : "https://api.vercel.com/v2/user";
+  const identityUrl = provider === "github" ? "https://api.github.com/user" : provider === "supabase" ? "https://api.supabase.com/v1/organizations" : "https://api.vercel.com/login/oauth/userinfo";
   const identity = await fetch(identityUrl, { headers: { Authorization: `Bearer ${token.access_token}`, Accept: "application/json", "User-Agent": "Dhanushworks-Installer" } });
   if (!identity.ok) return fail(`Token exchange succeeded, but permission verification failed (${identity.status}). Re-authorize with the required permissions.`);
   const response = NextResponse.redirect(new URL(`/?oauth=${provider}`, request.url));
