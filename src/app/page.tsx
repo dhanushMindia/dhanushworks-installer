@@ -77,22 +77,27 @@ export default function InstallerWizard() {
     }
   };
 
-  const executeProvisioning = async () => {
+  const executeProvisioning = async (dryRun = false) => {
     setIsProvisioning(true);
-    setProvisionLogs(["Initiating live provisioning sequence..."]);
+    setProvisionLogs([dryRun ? "Initiating dry-run validation (no external mutations)..." : "Initiating live provisioning sequence..."]);
+    setErrorDetails(null);
 
     try {
       const res = await fetch("/api/provision", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({ ...formData, dryRun }),
       });
       const data = await res.json();
 
       if (data.success) {
         setProvisionLogs(data.logs || ["Provisioning completed successfully."]);
         setDeployResult({ deployUrl: data.deployUrl, repoUrl: data.repoUrl });
-        setStep(5); // Success step
+        if (!dryRun) {
+          setStep(5); // Success step for live provision
+        } else {
+          setProvisionLogs((prev) => [...prev, "[DRY RUN] Dry run passed successfully. No resources were modified."]);
+        }
       } else {
         setProvisionLogs((prev) => [...prev, `ERROR: ${data.error}`]);
         setErrorDetails(data.error);
@@ -106,7 +111,8 @@ export default function InstallerWizard() {
 
   const allAuthorized =
     providerStatus.github === "AUTHORIZED" &&
-    providerStatus.vercel === "AUTHORIZED";
+    providerStatus.vercel === "AUTHORIZED" &&
+    providerStatus.supabase === "AUTHORIZED";
 
   return (
     <div className="min-h-screen bg-[#fafaf9] text-[#1c1917] flex flex-col justify-between font-sans selection:bg-stone-200">
@@ -242,7 +248,7 @@ export default function InstallerWizard() {
             <div>
               <h2 className="text-xl font-medium tracking-tight text-stone-900">Cloud Provider API Tokens</h2>
               <p className="text-stone-600 mt-2 text-sm">
-                Provide your API tokens for GitHub and Vercel (Supabase token is optional for managed database provisioning).
+                Provide mandatory API tokens for GitHub, Vercel, and Supabase (required for independent database provisioning).
               </p>
             </div>
 
@@ -277,7 +283,7 @@ export default function InstallerWizard() {
 
               <div>
                 <label className="block text-xs font-mono text-stone-600 uppercase tracking-wider mb-1.5">
-                  Supabase Management Token (<span className="text-stone-900 font-semibold">Optional</span>)
+                  Supabase Management Token (<span className="text-stone-900 font-semibold text-red-600">Mandatory</span>)
                 </label>
                 <input
                   type="password"
@@ -313,7 +319,7 @@ export default function InstallerWizard() {
             <div>
               <h2 className="text-xl font-medium tracking-tight text-stone-900">Credential Verification</h2>
               <p className="text-stone-600 mt-2 text-sm">
-                Test your API tokens against real provider endpoints before initiating deployment.
+                Test your API tokens against real provider endpoints before initiating deployment. All three tokens are mandatory.
               </p>
             </div>
 
@@ -328,7 +334,7 @@ export default function InstallerWizard() {
               <div className="p-4 rounded-lg bg-stone-50 border border-stone-200 flex items-center justify-between">
                 <div>
                   <h3 className="font-medium text-stone-900 text-sm">GitHub API</h3>
-                  <p className="text-xs text-stone-500 font-mono mt-0.5">Tests repository creation scope</p>
+                  <p className="text-xs text-stone-500 font-mono mt-0.5">Tests template generation scope</p>
                 </div>
                 <div className="flex items-center gap-3">
                   <span className={`px-2.5 py-1 rounded text-xs font-mono font-medium ${
@@ -342,6 +348,27 @@ export default function InstallerWizard() {
                     className="px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800 transition-colors"
                   >
                     Verify GitHub
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-lg bg-stone-50 border border-stone-200 flex items-center justify-between">
+                <div>
+                  <h3 className="font-medium text-stone-900 text-sm">Supabase API</h3>
+                  <p className="text-xs text-stone-500 font-mono mt-0.5">Tests management API token</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className={`px-2.5 py-1 rounded text-xs font-mono font-medium ${
+                    providerStatus.supabase === "AUTHORIZED" ? "bg-emerald-100 text-emerald-800" : "bg-stone-200 text-stone-700"
+                  }`}>
+                    {providerStatus.supabase}
+                  </span>
+                  <button
+                    onClick={() => verifyProvider("supabase")}
+                    disabled={isVerifying}
+                    className="px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800 transition-colors"
+                  >
+                    Verify Supabase
                   </button>
                 </div>
               </div>
@@ -390,15 +417,22 @@ export default function InstallerWizard() {
           </div>
         )}
 
-        {/* Step 4: Live Execution */}
+        {/* Step 4: Live Execution & Dry Run */}
         {step === 4 && (
           <div className="space-y-6 bg-white border border-stone-200 rounded-xl p-8 shadow-sm">
             <div>
-              <h2 className="text-xl font-medium tracking-tight text-stone-900">Execute Live Provisioning</h2>
+              <h2 className="text-xl font-medium tracking-tight text-stone-900">Execute Provisioning & Validation</h2>
               <p className="text-stone-600 mt-2 text-sm">
-                All credentials verified. Click below to create the GitHub repository, provision database configurations, and deploy to Vercel.
+                All credentials verified. Run a dry-run test first to validate pipelines without external mutations, or execute live deployment.
               </p>
             </div>
+
+            {errorDetails && (
+              <div className="p-4 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-3">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-600" />
+                <span>{errorDetails}</span>
+              </div>
+            )}
 
             <div className="p-5 rounded-lg bg-stone-50 border border-stone-200 space-y-2 font-mono text-xs text-stone-700">
               <div className="flex justify-between">
@@ -434,13 +468,22 @@ export default function InstallerWizard() {
               >
                 <ArrowLeft className="w-4 h-4" /> Back
               </button>
-              <button
-                disabled={isProvisioning}
-                onClick={executeProvisioning}
-                className="px-6 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
-              >
-                {isProvisioning ? "Provisioning in progress..." : "Execute Live Provisioning"}
-              </button>
+              <div className="flex gap-3">
+                <button
+                  disabled={isProvisioning}
+                  onClick={() => executeProvisioning(true)}
+                  className="px-4 py-2.5 bg-stone-200 hover:bg-stone-300 text-stone-800 text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
+                >
+                  {isProvisioning ? "Running..." : "Test Dry-Run (No Mutations)"}
+                </button>
+                <button
+                  disabled={isProvisioning}
+                  onClick={() => executeProvisioning(false)}
+                  className="px-6 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
+                >
+                  {isProvisioning ? "Provisioning..." : "Execute Live Provisioning"}
+                </button>
+              </div>
             </div>
           </div>
         )}
