@@ -12,7 +12,7 @@ async function begin(request: NextRequest, provider: Provider, draft?: unknown) 
   const clientId = process.env[`${provider.toUpperCase()}_OAUTH_CLIENT_ID`]!;
   const authorize = provider === "github" ? new URL("https://github.com/login/oauth/authorize") : provider === "supabase" ? new URL("https://api.supabase.com/v1/oauth/authorize") : new URL("https://vercel.com/oauth/authorize");
   authorize.searchParams.set("client_id", clientId); authorize.searchParams.set("redirect_uri", redirect.toString()); authorize.searchParams.set("response_type", "code"); authorize.searchParams.set("state", state); authorize.searchParams.set("code_challenge", challenge(verifier)); authorize.searchParams.set("code_challenge_method", "S256");
-  if (provider === "github") authorize.searchParams.set("scope", "repo offline_access");
+  if (provider === "github") authorize.searchParams.set("scope", "repo");
   if (provider === "vercel") authorize.searchParams.set("scope", "openid email profile offline_access");
   const response = NextResponse.json({ url: authorize.toString() });
   const options = { httpOnly: true, secure: true, sameSite: "lax" as const, path: "/", maxAge: 600 };

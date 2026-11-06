@@ -145,10 +145,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const githubToken = requireString(body.githubToken || oauthToken(request, "github"), "GitHub authorization");
     const supabaseToken = requireString(body.supabaseToken || oauthToken(request, "supabase"), "Supabase authorization");
-    // Vercel Sign in with Vercel proves identity but does not universally grant
-    // the project/deployment permissions this installer needs. Require the
-    // deployment token that was explicitly verified in the wizard.
-    const vercelToken = requireString(body.vercelToken, "Vercel deployment token");
+    const vercelToken = requireString(oauthToken(request, "vercel"), "Vercel OAuth authorization");
     const githubRepoName = requireString(body.githubRepoName, "GitHub repository name");
     const name = requireString(body.name, "Researcher name");
     const title = requireString(body.title, "Professional title");
