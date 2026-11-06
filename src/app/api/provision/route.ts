@@ -99,7 +99,12 @@ async function waitForSupabaseProject(ref: string, token: string): Promise<void>
     if (response.ok) {
       const health = await json<Record<string, unknown>>(response);
       const services = Array.isArray(health.services) ? health.services as Array<Record<string, unknown>> : [];
-      if (!services.length || services.every((service) => service.status === "ACTIVE_HEALTHY")) return;
+      const projectStatus = typeof health.status === "string" ? health.status : "";
+      const isHealthyStatus = ["ACTIVE_HEALTHY", "HEALTHY", "ACTIVE"].includes(projectStatus);
+      const areServicesHealthy = services.length > 0 && services.every((service) => ["ACTIVE_HEALTHY", "HEALTHY", "ACTIVE"].includes(String(service.status)));
+      // Supabase has returned both top-level and per-service health shapes over
+      // time. Accept either positive signal; do not strand a healthy project.
+      if (isHealthyStatus || areServicesHealthy) return;
     }
     await wait(3000);
   }
