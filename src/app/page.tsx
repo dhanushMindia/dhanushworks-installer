@@ -278,8 +278,16 @@ export default function InstallerWizard() {
             <div>
               <h2 className="text-xl font-medium tracking-tight text-stone-900">Cloud Provider API Tokens</h2>
               <p className="text-stone-600 mt-2 text-sm">
-                Provide mandatory API tokens for GitHub, Vercel, and Supabase (required for independent database provisioning).
+                Connect each provider securely with OAuth. Personal access tokens remain available only as a controlled recovery path.
               </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {(["github", "supabase", "vercel"] as const).map((provider) => (
+                <a key={provider} href={`/api/oauth/${provider}/start`} className="rounded-lg border border-stone-300 px-3 py-2 text-center text-xs font-medium text-stone-800 hover:bg-stone-100">
+                  Connect {provider[0].toUpperCase() + provider.slice(1)} with OAuth
+                </a>
+              ))}
             </div>
 
             <div className="space-y-4 pt-2">

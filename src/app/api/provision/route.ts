@@ -1,5 +1,6 @@
 import { randomBytes } from "crypto";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { cookieName, decrypt, type Provider } from "@/lib/oauth";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -99,12 +100,17 @@ async function waitForSupabaseProject(ref: string, token: string): Promise<void>
   throw new Error("Supabase project is still initializing. Wait a few minutes, then retry provisioning with the same project name.");
 }
 
-export async function POST(request: Request) {
+type OAuthToken = { accessToken: string; refreshToken?: string; expiresAt?: number };
+function oauthToken(request: NextRequest, provider: Provider): string | undefined {
+  return decrypt<OAuthToken>(request.cookies.get(cookieName(provider))?.value)?.accessToken;
+}
+
+export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const githubToken = requireString(body.githubToken, "GitHub token");
-    const supabaseToken = requireString(body.supabaseToken, "Supabase token");
-    const vercelToken = requireString(body.vercelToken, "Vercel token");
+    const githubToken = requireString(body.githubToken || oauthToken(request, "github"), "GitHub authorization");
+    const supabaseToken = requireString(body.supabaseToken || oauthToken(request, "supabase"), "Supabase authorization");
+    const vercelToken = requireString(body.vercelToken || oauthToken(request, "vercel"), "Vercel authorization");
     const githubRepoName = requireString(body.githubRepoName, "GitHub repository name");
     const name = requireString(body.name, "Researcher name");
     const title = requireString(body.title, "Professional title");
