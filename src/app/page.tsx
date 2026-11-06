@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CheckCircle2,
   AlertCircle,
@@ -40,9 +40,32 @@ export default function InstallerWizard() {
   const [provisionLogs, setProvisionLogs] = useState<string[]>([]);
   const [deployResult, setDeployResult] = useState<{ deployUrl?: string; repoUrl?: string } | null>(null);
 
+  useEffect(() => {
+    const saved = window.sessionStorage.getItem("dhanushworks-installer-draft");
+    if (saved) {
+      try { setFormData(JSON.parse(saved)); } catch { window.sessionStorage.removeItem("dhanushworks-installer-draft"); }
+    }
+    fetch("/api/oauth/status", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((connected) => setProviderStatus((previous) => ({
+        ...previous,
+        github: connected.github ? "AUTHORIZED" : previous.github,
+        supabase: connected.supabase ? "AUTHORIZED" : previous.supabase,
+        vercel: connected.vercel ? "AUTHORIZED" : previous.vercel,
+      })))
+      .catch(() => undefined);
+    const oauth = new URLSearchParams(window.location.search).get("oauth");
+    if (oauth === "failed") setErrorDetails("Provider authorization did not complete. Check the callback URL registered with that provider and try again.");
+    if (["github", "supabase", "vercel"].includes(oauth || "")) setErrorDetails(`${oauth![0].toUpperCase()}${oauth!.slice(1)} is now connected. Your draft has been restored.`);
+  }, []);
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+    const next = { ...formData, [e.target.name]: e.target.value };
+    setFormData(next);
+    window.sessionStorage.setItem("dhanushworks-installer-draft", JSON.stringify(next));
   };
+
+  const preserveDraftForOAuth = () => window.sessionStorage.setItem("dhanushworks-installer-draft", JSON.stringify(formData));
 
   const verifyProvider = async (provider: "github" | "supabase" | "vercel") => {
     setIsVerifying(true);
@@ -284,7 +307,7 @@ export default function InstallerWizard() {
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {(["github", "supabase", "vercel"] as const).map((provider) => (
-                <a key={provider} href={`/api/oauth/${provider}/start`} className="rounded-lg border border-stone-300 px-3 py-2 text-center text-xs font-medium text-stone-800 hover:bg-stone-100">
+                <a key={provider} onClick={preserveDraftForOAuth} href={`/api/oauth/${provider}/start`} className="rounded-lg border border-stone-300 px-3 py-2 text-center text-xs font-medium text-stone-800 hover:bg-stone-100">
                   Connect {provider[0].toUpperCase() + provider.slice(1)} with OAuth
                 </a>
               ))}
