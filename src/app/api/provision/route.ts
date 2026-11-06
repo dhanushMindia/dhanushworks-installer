@@ -86,7 +86,10 @@ async function verifyProviders(githubToken: string, supabaseToken: string, verce
 }
 
 async function waitForSupabaseProject(ref: string, token: string): Promise<void> {
-  for (let attempt = 0; attempt < 18; attempt += 1) {
+  // Supabase often needs several minutes to initialize a new project. Keep the
+  // provisioning request alive through that documented window instead of asking
+  // the researcher to blindly repeat an already-started installation.
+  for (let attempt = 0; attempt < 80; attempt += 1) {
     const response = await fetch(`https://api.supabase.com/v1/projects/${ref}/health`, {
       headers: bearerHeaders(token),
     });
@@ -97,7 +100,7 @@ async function waitForSupabaseProject(ref: string, token: string): Promise<void>
     }
     await wait(3000);
   }
-  throw new Error("Supabase project is still initializing. Wait a few minutes, then retry provisioning with the same project name.");
+  throw new Error("Supabase project was created but did not become healthy within four minutes. No repository or Vercel project was created. Check the Supabase dashboard, then resume this installation from its recorded project reference.");
 }
 
 type OAuthToken = { accessToken: string; refreshToken?: string; expiresAt?: number };
@@ -167,7 +170,11 @@ export async function POST(request: NextRequest) {
       }),
     });
     if (!supabaseProjectResponse.ok) {
-      throw new Error(`Supabase project creation failed: ${await providerError(supabaseProjectResponse)}`);
+      const message = await providerError(supabaseProjectResponse);
+      if (/maximum limits for the number of active free projects/i.test(message)) {
+        return noStore({ success: false, code: "SUPABASE_FREE_PROJECT_LIMIT", error: "Supabase cannot create another free project for this organization because its active free-project limit has been reached. No GitHub repository or Vercel project was created. Pause, delete, or upgrade an existing Supabase project, then start a fresh installation." }, { status: 409 });
+      }
+      throw new Error(`Supabase project creation failed: ${message}`);
     }
     const supabaseProject = await json<{ ref: string }>(supabaseProjectResponse);
     if (!supabaseProject.ref) throw new Error("Supabase did not return a project reference.");

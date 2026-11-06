@@ -39,6 +39,7 @@ export default function InstallerWizard() {
   const [isProvisioning, setIsProvisioning] = useState(false);
   const [provisionLogs, setProvisionLogs] = useState<string[]>([]);
   const [deployResult, setDeployResult] = useState<{ deployUrl?: string; repoUrl?: string } | null>(null);
+  const [oauthNotice, setOauthNotice] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/oauth/status", { cache: "no-store" })
@@ -48,7 +49,7 @@ export default function InstallerWizard() {
     const query = new URLSearchParams(window.location.search);
     const oauth = query.get("oauth");
     if (oauth === "failed") setErrorDetails(`${query.get("provider") || "Provider"} OAuth failed: ${query.get("reason") || "Check the callback URL and OAuth app settings, then try again."}`);
-    if (["github", "supabase", "vercel"].includes(oauth || "")) setErrorDetails(`${oauth![0].toUpperCase()}${oauth!.slice(1)} is now connected. Your draft has been restored.`);
+    if (["github", "supabase", "vercel"].includes(oauth || "")) setOauthNotice(`${oauth![0].toUpperCase()}${oauth!.slice(1)} connected. Your draft was restored.`);
   }, []);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -303,11 +304,14 @@ export default function InstallerWizard() {
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {(["github", "supabase", "vercel"] as const).map((provider) => (
-                <button key={provider} onClick={() => preserveDraftForOAuth(provider)} className="rounded-lg border border-stone-300 px-3 py-2 text-center text-xs font-medium text-stone-800 hover:bg-stone-100">
-                  Connect {provider[0].toUpperCase() + provider.slice(1)} with OAuth
+                <button key={provider} onClick={() => preserveDraftForOAuth(provider)} className={`rounded-lg border px-3 py-2 text-center text-xs font-medium ${providerStatus[provider] === "AUTHORIZED" ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-stone-300 text-stone-800 hover:bg-stone-100"}`}>
+                  {providerStatus[provider] === "AUTHORIZED" ? `${provider[0].toUpperCase() + provider.slice(1)} connected ✓` : `Connect ${provider[0].toUpperCase() + provider.slice(1)} with OAuth`}
                 </button>
               ))}
             </div>
+
+            {oauthNotice && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{oauthNotice}</div>}
+            {errorDetails && <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">{errorDetails}</div>}
 
             <div className="space-y-4 pt-2">
               <div>
