@@ -3,7 +3,6 @@
 import { useState } from "react";
 import {
   ShieldCheck,
-  Github,
   Database,
   Globe,
   CheckCircle2,
@@ -14,7 +13,8 @@ import {
   ExternalLink,
   Terminal,
   Layers,
-  Sparkles
+  Sparkles,
+  Code as Github
 } from "lucide-react";
 
 export default function InstallerWizard() {
