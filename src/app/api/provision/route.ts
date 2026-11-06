@@ -26,6 +26,11 @@ const noStore = (body: unknown, init: ResponseInit = {}, resume?: unknown) => {
   return response;
 };
 
+const clearResume = (response: NextResponse) => {
+  response.cookies.set("__Host-installer-provision", "", { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 0 });
+  return response;
+};
+
 async function providerError(response: Response): Promise<string> {
   const payload: unknown = await response.json().catch(() => null);
   if (payload && typeof payload === "object") {
@@ -278,13 +283,13 @@ export async function POST(request: NextRequest) {
     const deployment = await json<{ url?: string }>(deploymentResponse);
     logs.push("Deployment has started. Vercel will run migrations and create the initial administrator before the site becomes ready.");
 
-    return noStore({
+    return clearResume(noStore({
       success: true,
       logs,
       deployUrl: deployment.url ? `https://${deployment.url}` : deploymentUrl,
       repoUrl: repository.html_url,
       supabaseProjectRef: supabaseProject.ref,
-    });
+    }));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Provisioning failed.";
     return noStore({ success: false, error: message, resumable: Boolean(resumableJob) }, { status: 400 }, resumableJob);
