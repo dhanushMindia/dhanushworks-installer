@@ -1,164 +1,269 @@
+import { randomBytes } from "crypto";
 import { NextResponse } from "next/server";
+
+export const runtime = "nodejs";
+export const maxDuration = 300;
+
+const githubHeaders = (token: string) => ({
+  Authorization: `Bearer ${token}`,
+  Accept: "application/vnd.github+json",
+  "Content-Type": "application/json",
+  "User-Agent": "Dhanushworks-Installer",
+});
+
+const bearerHeaders = (token: string) => ({
+  Authorization: `Bearer ${token}`,
+  "Content-Type": "application/json",
+  "User-Agent": "Dhanushworks-Installer",
+});
+
+const json = <T>(response: Response) => response.json() as Promise<T>;
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const noStore = (body: unknown, init: ResponseInit = {}) =>
+  NextResponse.json(body, { ...init, headers: { "Cache-Control": "no-store", ...init.headers } });
+
+async function providerError(response: Response): Promise<string> {
+  const payload: unknown = await response.json().catch(() => null);
+  if (payload && typeof payload === "object") {
+    const record = payload as { message?: unknown; error?: { message?: unknown } };
+    if (typeof record.message === "string") return record.message;
+    if (typeof record.error?.message === "string") return record.error.message;
+  }
+  return response.statusText;
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${field} is required.`);
+  return value.trim();
+}
+
+function validRepositoryName(value: string): boolean {
+  return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(value);
+}
+
+function extractServiceKey(payload: unknown): string | undefined {
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    if (typeof record.secret === "string") return record.secret;
+    if (typeof record.service_role === "string") return record.service_role;
+    for (const value of Object.values(record)) {
+      if (Array.isArray(value)) {
+        const key = value.find((item) => {
+          if (!item || typeof item !== "object") return false;
+          const entry = item as Record<string, unknown>;
+          return entry.name === "service_role" || entry.name === "secret" || entry.type === "secret";
+        }) as Record<string, unknown> | undefined;
+        if (key) {
+          for (const candidate of [key.api_key, key.key, key.value]) {
+            if (typeof candidate === "string") return candidate;
+          }
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+async function verifyProviders(githubToken: string, supabaseToken: string, vercelToken: string) {
+  const [githubResponse, supabaseResponse, vercelResponse] = await Promise.all([
+    fetch("https://api.github.com/user", { headers: githubHeaders(githubToken) }),
+    fetch("https://api.supabase.com/v1/organizations", { headers: bearerHeaders(supabaseToken) }),
+    fetch("https://api.vercel.com/v2/user", { headers: bearerHeaders(vercelToken) }),
+  ]);
+
+  if (!githubResponse.ok) throw new Error("GitHub token verification failed.");
+  if (!supabaseResponse.ok) throw new Error("Supabase Management token verification failed.");
+  if (!vercelResponse.ok) throw new Error("Vercel token verification failed.");
+
+  const [github, organizations, vercel] = await Promise.all([
+    json<{ login: string }>(githubResponse),
+    json<Array<{ slug?: string; id?: string }>>(supabaseResponse),
+    json<unknown>(vercelResponse),
+  ]);
+
+  return { github, organizations, vercel };
+}
+
+async function waitForSupabaseProject(ref: string, token: string): Promise<void> {
+  for (let attempt = 0; attempt < 18; attempt += 1) {
+    const response = await fetch(`https://api.supabase.com/v1/projects/${ref}/health`, {
+      headers: bearerHeaders(token),
+    });
+    if (response.ok) {
+      const health = await json<Record<string, unknown>>(response);
+      const services = Array.isArray(health.services) ? health.services as Array<Record<string, unknown>> : [];
+      if (!services.length || services.every((service) => service.status === "ACTIVE_HEALTHY")) return;
+    }
+    await wait(3000);
+  }
+  throw new Error("Supabase project is still initializing. Wait a few minutes, then retry provisioning with the same project name.");
+}
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const {
-      name,
-      title,
-      researchFocus,
-      email,
-      adminPassword,
-      githubRepoName,
-      githubToken,
-      supabaseToken,
-      vercelToken,
-      dryRun = false,
-    } = body;
+    const githubToken = requireString(body.githubToken, "GitHub token");
+    const supabaseToken = requireString(body.supabaseToken, "Supabase token");
+    const vercelToken = requireString(body.vercelToken, "Vercel token");
+    const githubRepoName = requireString(body.githubRepoName, "GitHub repository name");
+    const name = requireString(body.name, "Researcher name");
+    const title = requireString(body.title, "Professional title");
+    const researchFocus = requireString(body.researchFocus, "Research focus");
+    const email = requireString(body.email, "Admin email");
+    const adminPassword = requireString(body.adminPassword, "Admin password");
+    const dryRun = body.dryRun === true;
 
-    const logs: string[] = [];
-    logs.push("Initializing provisioning pipeline...");
-
-    // 1. Mandatory Validation Checks
-    if (!githubToken) {
-      return NextResponse.json({ success: false, error: "GitHub Personal Access Token is required." }, { status: 400 });
+    if (!validRepositoryName(githubRepoName)) {
+      return noStore({ success: false, error: "Repository names may contain only letters, numbers, periods, underscores, and hyphens." }, { status: 400 });
     }
-    if (!vercelToken) {
-      return NextResponse.json({ success: false, error: "Vercel API Token is required." }, { status: 400 });
-    }
-    if (!supabaseToken) {
-      return NextResponse.json({ success: false, error: "Supabase Management API Token is mandatory. An independent portfolio installation requires an independent database." }, { status: 400 });
-    }
-    if (!githubRepoName) {
-      return NextResponse.json({ success: false, error: "GitHub repository name is required." }, { status: 400 });
+    if (adminPassword.length < 12) {
+      return noStore({ success: false, error: "Use an administrator password with at least 12 characters." }, { status: 400 });
     }
 
-    logs.push("Validation passed: GitHub, Vercel, and Supabase credentials provided.");
+    const logs = ["Verifying GitHub, Supabase, and Vercel credentials in parallel..."];
+    const { github, organizations } = await verifyProviders(githubToken, supabaseToken, vercelToken);
+    const organizationSlug = typeof body.supabaseOrganizationSlug === "string" && body.supabaseOrganizationSlug.trim()
+      ? body.supabaseOrganizationSlug.trim()
+      : organizations[0]?.slug || organizations[0]?.id;
+    if (!organizationSlug) throw new Error("No Supabase organization is available for this token.");
+
+    const existingRepo = await fetch(`https://api.github.com/repos/${github.login}/${githubRepoName}`, {
+      headers: githubHeaders(githubToken),
+    });
+    if (existingRepo.ok) {
+      return noStore({ success: false, error: `Repository '${githubRepoName}' already exists for ${github.login}. Choose a different name.` }, { status: 409 });
+    }
+    if (existingRepo.status !== 404) throw new Error("GitHub could not check whether the requested repository name is available.");
+
+    logs.push(`Verified provider access for GitHub account ${github.login}.`);
+    logs.push(`Selected Supabase organization ${organizationSlug}.`);
+    logs.push(`Confirmed '${githubRepoName}' is available on GitHub.`);
 
     if (dryRun) {
-      logs.push("[DRY RUN] Validating GitHub template generation: dhanushMindia/dhanushworks-template -> " + githubRepoName);
-      logs.push("[DRY RUN] Validating Supabase project & database creation...");
-      logs.push("[DRY RUN] Validating Vercel project creation (POST /v11/projects)...");
-      logs.push("[DRY RUN] Dry run completed successfully. No external resources were created.");
-
-      return NextResponse.json({
-        success: true,
-        dryRun: true,
-        logs,
-        deployUrl: `https://${githubRepoName}.vercel.app`,
-        repoUrl: `https://github.com/dhanushMindia/${githubRepoName}`,
-      });
+      logs.push("Dry run passed: credentials, Supabase organization, and repository availability were verified.");
+      return noStore({ success: true, dryRun: true, logs });
     }
 
-    // 2. Live Token Verification
-    logs.push("Verifying GitHub token against live API...");
-    const ghUserRes = await fetch("https://api.github.com/user", {
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-        "User-Agent": "Dhanushworks-Installer",
-      },
-    });
+    const databasePassword = randomBytes(32).toString("base64url");
+    const authSecret = randomBytes(32).toString("base64url");
+    const projectName = `${githubRepoName}-db`.slice(0, 60);
+    const regionGroup = ["americas", "emea", "apac"].includes(body.supabaseRegion) ? body.supabaseRegion : "apac";
 
-    if (!ghUserRes.ok) {
-      return NextResponse.json({ success: false, error: "Invalid or expired GitHub Personal Access Token." }, { status: 400 });
-    }
-    const ghUser = await ghUserRes.json();
-    logs.push(`GitHub authenticated as: ${ghUser.login}`);
-
-    logs.push("Verifying Supabase Management API token...");
-    const sbOrgRes = await fetch("https://api.supabase.com/v1/organizations", {
-      headers: {
-        Authorization: `Bearer ${supabaseToken}`,
-        "User-Agent": "Dhanushworks-Installer",
-      },
-    });
-
-    if (!sbOrgRes.ok) {
-      return NextResponse.json({ success: false, error: "Invalid Supabase Management API Token. Please check your credentials." }, { status: 400 });
-    }
-    const orgs = await sbOrgRes.json();
-    const orgId = orgs[0]?.id;
-    logs.push(`Supabase authenticated. Organization ID: ${orgId || "default"}`);
-
-    logs.push("Verifying Vercel API token...");
-    const vercelUserRes = await fetch("https://api.vercel.com/v2/user", {
-      headers: {
-        Authorization: `Bearer ${vercelToken}`,
-        "User-Agent": "Dhanushworks-Installer",
-      },
-    });
-
-    if (!vercelUserRes.ok) {
-      return NextResponse.json({ success: false, error: "Invalid or expired Vercel API Token." }, { status: 400 });
-    }
-    logs.push("Vercel token verified successfully.");
-
-    // 3. GitHub Repository Generation from Template
-    // Endpoint: POST /repos/{template_owner}/{template_repo}/generate
-    logs.push("Generating repository from dhanushMindia/dhanushworks-template...");
-    const generateRes = await fetch("https://api.github.com/repos/dhanushMindia/dhanushworks-template/generate", {
+    logs.push("Creating an independent Supabase project...");
+    const supabaseProjectResponse = await fetch("https://api.supabase.com/v1/projects", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        "User-Agent": "Dhanushworks-Installer",
-      },
+      headers: bearerHeaders(supabaseToken),
       body: JSON.stringify({
-        owner: ghUser.login,
-        name: githubRepoName,
-        description: `Research Portfolio & CSPR Platform — ${researchFocus}`,
-        include_all_branches: false,
-        private: false,
+        name: projectName,
+        organization_slug: organizationSlug,
+        db_pass: databasePassword,
+        region_selection: { type: "smartGroup", code: regionGroup },
       }),
     });
-
-    if (!generateRes.ok) {
-      const errData = await generateRes.json();
-      if (generateRes.status === 422 || generateRes.status === 409) {
-        return NextResponse.json({ success: false, error: `Repository name collision: '${githubRepoName}' already exists on GitHub. Please choose a unique name.` }, { status: 400 });
-      }
-      return NextResponse.json({ success: false, error: `GitHub template generation failed: ${errData.message || generateRes.statusText}` }, { status: 400 });
+    if (!supabaseProjectResponse.ok) {
+      throw new Error(`Supabase project creation failed: ${await providerError(supabaseProjectResponse)}`);
     }
+    const supabaseProject = await json<{ ref: string }>(supabaseProjectResponse);
+    if (!supabaseProject.ref) throw new Error("Supabase did not return a project reference.");
+    logs.push("Supabase project created. Waiting for database services to become healthy...");
+    await waitForSupabaseProject(supabaseProject.ref, supabaseToken);
 
-    const repoData = await generateRes.json();
-    logs.push(`Repository successfully generated: ${repoData.html_url}`);
+    const apiKeysResponse = await fetch(`https://api.supabase.com/v1/projects/${supabaseProject.ref}/api-keys?reveal=true`, {
+      headers: bearerHeaders(supabaseToken),
+    });
+    if (!apiKeysResponse.ok) throw new Error("Unable to retrieve a server-side Supabase API key for storage configuration.");
+    const supabaseServiceKey = extractServiceKey(await json<unknown>(apiKeysResponse));
+    if (!supabaseServiceKey) throw new Error("Supabase did not provide a server-side API key. The project was created, but deployment has not started.");
 
-    // 4. Vercel Project Creation (using POST /v11/projects)
-    logs.push("Creating Vercel project via POST /v11/projects...");
-    const vercelProjRes = await fetch("https://api.vercel.com/v11/projects", {
+    const supabaseUrl = `https://${supabaseProject.ref}.supabase.co`;
+    const bucketResponse = await fetch(`${supabaseUrl}/storage/v1/bucket`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${vercelToken}`,
-        "Content-Type": "application/json",
-      },
+      headers: { ...bearerHeaders(supabaseServiceKey), apikey: supabaseServiceKey },
+      body: JSON.stringify({ id: "portfolio-media", name: "portfolio-media", public: false }),
+    });
+    if (!bucketResponse.ok && bucketResponse.status !== 409) throw new Error("Supabase Storage bucket creation failed.");
+    logs.push("Supabase database and private media bucket are ready.");
+
+    logs.push("Generating the GitHub repository from the Dhanushworks template...");
+    const generateResponse = await fetch("https://api.github.com/repos/dhanushMindia/dhanushworks-template/generate", {
+      method: "POST",
+      headers: githubHeaders(githubToken),
+      body: JSON.stringify({
+        owner: github.login,
+        name: githubRepoName,
+        description: `Research portfolio — ${researchFocus}`,
+        include_all_branches: false,
+        private: true,
+      }),
+    });
+    if (!generateResponse.ok) {
+      throw new Error(`GitHub template generation failed: ${await providerError(generateResponse)}`);
+    }
+    const repository = await json<{ html_url: string; id: number; default_branch?: string }>(generateResponse);
+    logs.push("Repository generated successfully.");
+
+    const databaseUrl = `postgresql://postgres:${encodeURIComponent(databasePassword)}@db.${supabaseProject.ref}.supabase.co:5432/postgres`;
+    const deploymentUrl = `https://${githubRepoName}.vercel.app`;
+    const environmentVariables = [
+      ["DATABASE_URL", databaseUrl],
+      ["DIRECT_URL", databaseUrl],
+      ["NEXTAUTH_SECRET", authSecret],
+      ["NEXTAUTH_URL", deploymentUrl],
+      ["AUTH_TRUST_HOST", "true"],
+      ["ADMIN_EMAIL", email],
+      ["ADMIN_PASSWORD", adminPassword],
+      ["PROFILE_NAME", name],
+      ["PROFILE_TAGLINE", title],
+      ["PROFILE_BIO", researchFocus],
+      ["PROFILE_ROLE", title],
+      ["PROFILE_FOCUS", researchFocus],
+      ["SUPABASE_URL", supabaseUrl],
+      ["SUPABASE_SERVICE_ROLE_KEY", supabaseServiceKey],
+      ["SUPABASE_STORAGE_BUCKET", "portfolio-media"],
+    ].map(([key, value]) => ({ key, value, type: "encrypted", target: ["production", "preview", "development"] }));
+
+    logs.push("Creating the Vercel project with encrypted environment variables...");
+    const vercelProjectResponse = await fetch("https://api.vercel.com/v11/projects", {
+      method: "POST",
+      headers: bearerHeaders(vercelToken),
       body: JSON.stringify({
         name: githubRepoName,
         framework: "nextjs",
-        gitRepository: {
-          type: "github",
-          repo: `${ghUser.login}/${githubRepoName}`,
-        },
+        gitRepository: { type: "github", repo: `${github.login}/${githubRepoName}` },
+        environmentVariables,
       }),
     });
-
-    if (!vercelProjRes.ok) {
-      const errData = await vercelProjRes.json();
-      logs.push(`Vercel project creation warning: ${errData.error?.message || "Project may already exist or require manual link."}`);
-    } else {
-      logs.push("Vercel project created and linked to GitHub repository successfully.");
+    if (!vercelProjectResponse.ok) {
+      throw new Error(`Vercel project creation failed: ${await providerError(vercelProjectResponse)}`);
     }
+    const vercelProject = await json<{ id: string }>(vercelProjectResponse);
 
-    logs.push("Full provisioning sequence completed successfully.");
+    logs.push("Triggering the first production deployment and database initialization...");
+    const deploymentResponse = await fetch("https://api.vercel.com/v13/deployments", {
+      method: "POST",
+      headers: bearerHeaders(vercelToken),
+      body: JSON.stringify({
+        name: githubRepoName,
+        project: vercelProject.id,
+        target: "production",
+        gitSource: { type: "github", repoId: String(repository.id), ref: repository.default_branch || "main" },
+      }),
+    });
+    if (!deploymentResponse.ok) {
+      throw new Error(`Vercel deployment could not be started: ${await providerError(deploymentResponse)}`);
+    }
+    const deployment = await json<{ url?: string }>(deploymentResponse);
+    logs.push("Deployment has started. Vercel will run migrations and create the initial administrator before the site becomes ready.");
 
-    return NextResponse.json({
+    return noStore({
       success: true,
       logs,
-      deployUrl: `https://${githubRepoName}.vercel.app`,
-      repoUrl: repoData.html_url,
+      deployUrl: deployment.url ? `https://${deployment.url}` : deploymentUrl,
+      repoUrl: repository.html_url,
+      supabaseProjectRef: supabaseProject.ref,
     });
-  } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message || "Internal provisioning error" }, { status: 500 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Provisioning failed.";
+    return noStore({ success: false, error: message }, { status: 400 });
   }
 }

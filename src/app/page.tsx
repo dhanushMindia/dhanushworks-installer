@@ -15,12 +15,14 @@ import {
 export default function InstallerWizard() {
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState({
-    name: "Dr. A. Researcher",
-    title: "Quantitative Finance & Public Economics",
-    researchFocus: "Empirical market microstructure and state policy modeling",
-    email: "researcher@example.com",
-    adminPassword: "ResearchSecure2026!",
-    githubRepoName: "research-portfolio",
+    name: "",
+    title: "",
+    researchFocus: "",
+    email: "",
+    adminPassword: "",
+    githubRepoName: "",
+    supabaseOrganizationSlug: "",
+    supabaseRegion: "apac",
     githubToken: "",
     supabaseToken: "",
     vercelToken: "",
@@ -38,7 +40,7 @@ export default function InstallerWizard() {
   const [provisionLogs, setProvisionLogs] = useState<string[]>([]);
   const [deployResult, setDeployResult] = useState<{ deployUrl?: string; repoUrl?: string } | null>(null);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
@@ -170,6 +172,7 @@ export default function InstallerWizard() {
                   name="name"
                   value={formData.name}
                   onChange={handleInputChange}
+                  placeholder="Dr. Firstname Lastname"
                   className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm focus:outline-none focus:border-stone-900"
                 />
               </div>
@@ -181,6 +184,7 @@ export default function InstallerWizard() {
                   name="title"
                   value={formData.title}
                   onChange={handleInputChange}
+                  placeholder="Research Fellow, CSPR"
                   className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm focus:outline-none focus:border-stone-900"
                 />
               </div>
@@ -192,6 +196,7 @@ export default function InstallerWizard() {
                   name="researchFocus"
                   value={formData.researchFocus}
                   onChange={handleInputChange}
+                  autoComplete="email"
                   placeholder="e.g. Algorithmic Market Design & Monetary Policy"
                   className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm focus:outline-none focus:border-stone-900"
                 />
@@ -215,6 +220,9 @@ export default function InstallerWizard() {
                   name="adminPassword"
                   value={formData.adminPassword}
                   onChange={handleInputChange}
+                  autoComplete="new-password"
+                  minLength={12}
+                  placeholder="At least 12 characters"
                   className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm focus:outline-none focus:border-stone-900"
                 />
               </div>
@@ -226,8 +234,30 @@ export default function InstallerWizard() {
                   name="githubRepoName"
                   value={formData.githubRepoName}
                   onChange={handleInputChange}
+                  placeholder="cspr-research-portfolio"
                   className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm font-mono focus:outline-none focus:border-stone-900"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-mono text-stone-600 uppercase tracking-wider mb-1.5">Supabase Organization Slug <span className="normal-case text-stone-400">(optional)</span></label>
+                <input
+                  type="text"
+                  name="supabaseOrganizationSlug"
+                  value={formData.supabaseOrganizationSlug}
+                  onChange={handleInputChange}
+                  placeholder="Leave blank to use your first available organization"
+                  className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm focus:outline-none focus:border-stone-900"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-mono text-stone-600 uppercase tracking-wider mb-1.5">Database region</label>
+                <select name="supabaseRegion" value={formData.supabaseRegion} onChange={handleInputChange} className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm focus:outline-none focus:border-stone-900">
+                  <option value="apac">Asia Pacific</option>
+                  <option value="emea">Europe, Middle East & Africa</option>
+                  <option value="americas">Americas</option>
+                </select>
               </div>
             </div>
 
@@ -262,6 +292,7 @@ export default function InstallerWizard() {
                   name="githubToken"
                   value={formData.githubToken}
                   onChange={handleInputChange}
+                  autoComplete="off"
                   placeholder="ghp_..."
                   className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm font-mono focus:outline-none focus:border-stone-900"
                 />
@@ -276,6 +307,7 @@ export default function InstallerWizard() {
                   name="vercelToken"
                   value={formData.vercelToken}
                   onChange={handleInputChange}
+                  autoComplete="off"
                   placeholder="vercel_token_..."
                   className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm font-mono focus:outline-none focus:border-stone-900"
                 />
@@ -290,6 +322,7 @@ export default function InstallerWizard() {
                   name="supabaseToken"
                   value={formData.supabaseToken}
                   onChange={handleInputChange}
+                  autoComplete="off"
                   placeholder="sbp_..."
                   className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm font-mono focus:outline-none focus:border-stone-900"
                 />
@@ -423,7 +456,7 @@ export default function InstallerWizard() {
             <div>
               <h2 className="text-xl font-medium tracking-tight text-stone-900">Execute Provisioning & Validation</h2>
               <p className="text-stone-600 mt-2 text-sm">
-                All credentials verified. Run a dry-run test first to validate pipelines without external mutations, or execute live deployment.
+                A live run creates an independent database and private media bucket, then starts the first portfolio deployment. Run the no-change validation first.
               </p>
             </div>
 
@@ -496,7 +529,7 @@ export default function InstallerWizard() {
             </div>
             <h2 className="text-2xl font-medium tracking-tight text-stone-900">Provisioning Successful</h2>
             <p className="text-stone-600 text-sm max-w-md mx-auto">
-              Your research portfolio and CSPR platform have been successfully provisioned and deployed.
+              Your independent database, media bucket, repository, and production deployment have been created. The site link becomes available when Vercel finishes its first build.
             </p>
 
             <div className="flex flex-col sm:flex-row justify-center gap-4 pt-4">
