@@ -1,6 +1,6 @@
 import { randomBytes } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { cookieName, decrypt, type Provider } from "@/lib/oauth";
+import { cookieName, decrypt, encrypt, type Provider } from "@/lib/oauth";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -20,8 +20,11 @@ const bearerHeaders = (token: string) => ({
 
 const json = <T>(response: Response) => response.json() as Promise<T>;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const noStore = (body: unknown, init: ResponseInit = {}) =>
-  NextResponse.json(body, { ...init, headers: { "Cache-Control": "no-store", ...init.headers } });
+const noStore = (body: unknown, init: ResponseInit = {}, resume?: unknown) => {
+  const response = NextResponse.json(body, { ...init, headers: { "Cache-Control": "no-store", ...init.headers } });
+  if (resume) response.cookies.set("__Host-installer-provision", encrypt(resume), { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 6 });
+  return response;
+};
 
 async function providerError(response: Response): Promise<string> {
   const payload: unknown = await response.json().catch(() => null);
@@ -109,6 +112,7 @@ function oauthToken(request: NextRequest, provider: Provider): string | undefine
 }
 
 export async function POST(request: NextRequest) {
+  let resumableJob: { projectRef: string; databasePassword: string; projectName: string } | undefined;
   try {
     const body = await request.json();
     const githubToken = requireString(body.githubToken || oauthToken(request, "github"), "GitHub authorization");
@@ -153,31 +157,31 @@ export async function POST(request: NextRequest) {
       return noStore({ success: true, dryRun: true, logs });
     }
 
-    const databasePassword = randomBytes(32).toString("base64url");
+    const savedJob = decrypt<{ projectRef: string; databasePassword: string; projectName: string }>(request.cookies.get("__Host-installer-provision")?.value);
     const authSecret = randomBytes(32).toString("base64url");
     const projectName = `${githubRepoName}-db`.slice(0, 60);
     const regionGroup = ["americas", "emea", "apac"].includes(body.supabaseRegion) ? body.supabaseRegion : "apac";
-
-    logs.push("Creating an independent Supabase project...");
-    const supabaseProjectResponse = await fetch("https://api.supabase.com/v1/projects", {
-      method: "POST",
-      headers: bearerHeaders(supabaseToken),
-      body: JSON.stringify({
-        name: projectName,
-        organization_slug: organizationSlug,
-        db_pass: databasePassword,
-        region_selection: { type: "smartGroup", code: regionGroup },
-      }),
-    });
-    if (!supabaseProjectResponse.ok) {
-      const message = await providerError(supabaseProjectResponse);
-      if (/maximum limits for the number of active free projects/i.test(message)) {
-        return noStore({ success: false, code: "SUPABASE_FREE_PROJECT_LIMIT", error: "Supabase cannot create another free project for this organization because its active free-project limit has been reached. No GitHub repository or Vercel project was created. Pause, delete, or upgrade an existing Supabase project, then start a fresh installation." }, { status: 409 });
+    let supabaseProject: { ref: string };
+    let databasePassword: string;
+    if (savedJob?.projectName === projectName) {
+      supabaseProject = { ref: savedJob.projectRef }; databasePassword = savedJob.databasePassword;
+      logs.push(`Resuming the existing Supabase project ${projectName}.`);
+    } else {
+      const existingProjects = await fetch(`https://api.supabase.com/v1/projects?organization_slug=${encodeURIComponent(organizationSlug)}`, { headers: bearerHeaders(supabaseToken) });
+      const projects = existingProjects.ok ? await json<Array<{ name?: string; ref?: string }>>(existingProjects) : [];
+      if (projects.some((project) => project.name === projectName)) return noStore({ success: false, code: "EXISTING_UNRECOVERABLE_PROJECT", error: `A Supabase project named '${projectName}' already exists from an earlier interrupted attempt. To prevent a duplicate, the installer will not create another. Delete that test project or contact support to resume it with its original database password.` }, { status: 409 });
+      databasePassword = randomBytes(32).toString("base64url");
+      logs.push("Creating an independent Supabase project...");
+      const supabaseProjectResponse = await fetch("https://api.supabase.com/v1/projects", { method: "POST", headers: bearerHeaders(supabaseToken), body: JSON.stringify({ name: projectName, organization_slug: organizationSlug, db_pass: databasePassword, region_selection: { type: "smartGroup", code: regionGroup } }) });
+      if (!supabaseProjectResponse.ok) {
+        const message = await providerError(supabaseProjectResponse);
+        if (/maximum limits for the number of active free projects/i.test(message)) return noStore({ success: false, code: "SUPABASE_FREE_PROJECT_LIMIT", error: "Supabase cannot create another free project for this organization because its active free-project limit has been reached. No GitHub repository or Vercel project was created. Pause, delete, or upgrade an existing Supabase project, then start a fresh installation." }, { status: 409 });
+        throw new Error(`Supabase project creation failed: ${message}`);
       }
-      throw new Error(`Supabase project creation failed: ${message}`);
+      supabaseProject = await json<{ ref: string }>(supabaseProjectResponse);
+      if (!supabaseProject.ref) throw new Error("Supabase did not return a project reference.");
     }
-    const supabaseProject = await json<{ ref: string }>(supabaseProjectResponse);
-    if (!supabaseProject.ref) throw new Error("Supabase did not return a project reference.");
+    resumableJob = { projectRef: supabaseProject.ref, databasePassword, projectName };
     logs.push("Supabase project created. Waiting for database services to become healthy...");
     await waitForSupabaseProject(supabaseProject.ref, supabaseToken);
 
@@ -277,6 +281,6 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Provisioning failed.";
-    return noStore({ success: false, error: message }, { status: 400 });
+    return noStore({ success: false, error: message, resumable: Boolean(resumableJob) }, { status: 400 }, resumableJob);
   }
 }
