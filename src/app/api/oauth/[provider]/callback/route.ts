@@ -14,7 +14,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   if (!stateMatches(request.nextUrl.searchParams.get("state") || undefined, request.cookies.get(`__Host-oauth-state-${provider}`)?.value)) return fail("The authorization session expired or state validation failed. Start the connection again.");
   const verifier = request.cookies.get(`__Host-oauth-verifier-${provider}`)?.value; if (!verifier) return fail("The PKCE verifier was not found. Start the connection again.");
   const clientId = process.env[`${provider.toUpperCase()}_OAUTH_CLIENT_ID`]!, clientSecret = process.env[`${provider.toUpperCase()}_OAUTH_CLIENT_SECRET`]!;
-  const tokenUrl = provider === "github" ? "https://github.com/login/oauth/access_token" : provider === "supabase" ? "https://api.supabase.com/v1/oauth/token" : "https://api.vercel.com/v2/oauth/access_token";
+  // This app is a Sign in with Vercel OIDC application. Its Authorization Code
+  // exchange lives on the Sign in with Vercel token endpoint, using client_secret_post.
+  const tokenUrl = provider === "github" ? "https://github.com/login/oauth/access_token" : provider === "supabase" ? "https://api.supabase.com/v1/oauth/token" : "https://api.vercel.com/login/oauth/token";
   const body = new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: callbackUrl(provider), code_verifier: verifier });
   if (provider !== "supabase") { body.set("client_id", clientId); body.set("client_secret", clientSecret); }
   const headers: HeadersInit = { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" };
