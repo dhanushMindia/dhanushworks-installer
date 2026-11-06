@@ -20,8 +20,16 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const headers: HeadersInit = { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" };
   if (provider === "supabase") headers.Authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
   const tokenResponse = await fetch(tokenUrl, { method: "POST", headers, body });
-  const token = await tokenResponse.json().catch(() => null) as { access_token?: string; refresh_token?: string; expires_in?: number; error?: string; error_description?: string; message?: string } | null;
-  if (!tokenResponse.ok || !token?.access_token) return fail(token?.error_description || token?.message || token?.error || `Token exchange failed (${tokenResponse.status}).`);
+  const token = await tokenResponse.json().catch(() => null) as { access_token?: string; refresh_token?: string; expires_in?: number; error?: unknown; error_description?: unknown; message?: unknown } | null;
+  const safeProviderError = (payload: typeof token) => {
+    if (!payload) return undefined;
+    for (const value of [payload.error_description, payload.message, payload.error]) {
+      if (typeof value === "string") return value;
+      if (value && typeof value === "object" && typeof (value as { message?: unknown }).message === "string") return (value as { message: string }).message;
+    }
+    return undefined;
+  };
+  if (!tokenResponse.ok || !token?.access_token) return fail(safeProviderError(token) || `Token exchange failed (${tokenResponse.status}).`);
   const identityUrl = provider === "github" ? "https://api.github.com/user" : provider === "supabase" ? "https://api.supabase.com/v1/organizations" : "https://api.vercel.com/v2/user";
   const identity = await fetch(identityUrl, { headers: { Authorization: `Bearer ${token.access_token}`, Accept: "application/json", "User-Agent": "Dhanushworks-Installer" } });
   if (!identity.ok) return fail(`Token exchange succeeded, but permission verification failed (${identity.status}). Re-authorize with the required permissions.`);
