@@ -4,14 +4,21 @@ import { callbackUrl, cookieName, encrypt, stateMatches, type Provider } from "@
 const providers = ["github", "supabase", "vercel"] as const;
 export async function GET(request: NextRequest, { params }: { params: Promise<{ provider: string }> }) {
   const { provider: raw } = await params; const provider = raw as Provider; const error = request.nextUrl.searchParams.get("error"), code = request.nextUrl.searchParams.get("code");
-  if (!providers.includes(provider) || error || !code || !stateMatches(request.nextUrl.searchParams.get("state") || undefined, request.cookies.get(`__Host-oauth-state-${provider}`)?.value)) return NextResponse.redirect(new URL("/?oauth=failed", request.url));
-  const verifier = request.cookies.get(`__Host-oauth-verifier-${provider}`)?.value; if (!verifier) return NextResponse.redirect(new URL("/?oauth=failed", request.url));
+  const fail = (reason: string) => NextResponse.redirect(new URL(`/?oauth=failed&provider=${encodeURIComponent(provider)}&reason=${encodeURIComponent(reason.slice(0, 180))}`, request.url));
+  if (!providers.includes(provider)) return fail("Unknown OAuth provider.");
+  if (error) return fail(request.nextUrl.searchParams.get("error_description") || error);
+  if (!code) return fail("Authorization code was not returned by the provider.");
+  if (!stateMatches(request.nextUrl.searchParams.get("state") || undefined, request.cookies.get(`__Host-oauth-state-${provider}`)?.value)) return fail("The authorization session expired or state validation failed. Start the connection again.");
+  const verifier = request.cookies.get(`__Host-oauth-verifier-${provider}`)?.value; if (!verifier) return fail("The PKCE verifier was not found. Start the connection again.");
   const clientId = process.env[`${provider.toUpperCase()}_OAUTH_CLIENT_ID`]!, clientSecret = process.env[`${provider.toUpperCase()}_OAUTH_CLIENT_SECRET`]!;
   const tokenUrl = provider === "github" ? "https://github.com/login/oauth/access_token" : provider === "supabase" ? "https://api.supabase.com/v1/oauth/token" : "https://api.vercel.com/login/oauth/token";
-  const body = new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: callbackUrl(provider), code_verifier: verifier, client_id: clientId, client_secret: clientSecret });
-  const tokenResponse = await fetch(tokenUrl, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded", Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}` }, body });
-  const token = await tokenResponse.json().catch(() => null) as { access_token?: string; refresh_token?: string; expires_in?: number } | null;
-  if (!tokenResponse.ok || !token?.access_token) return NextResponse.redirect(new URL("/?oauth=failed", request.url));
+  const body = new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: callbackUrl(provider), code_verifier: verifier });
+  if (provider !== "supabase") { body.set("client_id", clientId); body.set("client_secret", clientSecret); }
+  const headers: HeadersInit = { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" };
+  if (provider === "supabase") headers.Authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
+  const tokenResponse = await fetch(tokenUrl, { method: "POST", headers, body });
+  const token = await tokenResponse.json().catch(() => null) as { access_token?: string; refresh_token?: string; expires_in?: number; error?: string; error_description?: string; message?: string } | null;
+  if (!tokenResponse.ok || !token?.access_token) return fail(token?.error_description || token?.message || token?.error || `Token exchange failed (${tokenResponse.status}).`);
   const response = NextResponse.redirect(new URL(`/?oauth=${provider}`, request.url));
   response.cookies.set(cookieName(provider), encrypt({ accessToken: token.access_token, refreshToken: token.refresh_token, expiresAt: token.expires_in ? Date.now() + token.expires_in * 1000 : undefined }), { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 30 });
   response.cookies.delete(`__Host-oauth-state-${provider}`); response.cookies.delete(`__Host-oauth-verifier-${provider}`); return response;

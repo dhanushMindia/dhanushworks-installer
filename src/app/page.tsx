@@ -54,8 +54,9 @@ export default function InstallerWizard() {
         vercel: connected.vercel ? "AUTHORIZED" : previous.vercel,
       })))
       .catch(() => undefined);
-    const oauth = new URLSearchParams(window.location.search).get("oauth");
-    if (oauth === "failed") setErrorDetails("Provider authorization did not complete. Check the callback URL registered with that provider and try again.");
+    const query = new URLSearchParams(window.location.search);
+    const oauth = query.get("oauth");
+    if (oauth === "failed") setErrorDetails(`${query.get("provider") || "Provider"} OAuth failed: ${query.get("reason") || "Check the callback URL and OAuth app settings, then try again."}`);
     if (["github", "supabase", "vercel"].includes(oauth || "")) setErrorDetails(`${oauth![0].toUpperCase()}${oauth!.slice(1)} is now connected. Your draft has been restored.`);
   }, []);
 
