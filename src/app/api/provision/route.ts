@@ -102,11 +102,12 @@ async function verifyProviders(githubToken: string, supabaseToken: string, verce
   return { github, organizations, vercel };
 }
 
-async function waitForSupabaseProject(ref: string, token: string): Promise<void> {
-  // Supabase often needs several minutes to initialize a new project. Keep the
-  // provisioning request alive through that documented window instead of asking
-  // the researcher to blindly repeat an already-started installation.
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+async function waitForSupabaseProject(ref: string, token: string): Promise<boolean> {
+  // Health is a useful signal, but OAuth scopes and transient Management API
+  // responses can make it unavailable even when the project services are ready.
+  // After a short bounded wait, let the concrete API-key and Storage calls below
+  // determine readiness; their failures are resumable without duplicating work.
+  for (let attempt = 0; attempt < 12; attempt += 1) {
     const response = await fetch(`https://api.supabase.com/v1/projects/${ref}/health`, {
       headers: bearerHeaders(token),
     });
@@ -118,11 +119,11 @@ async function waitForSupabaseProject(ref: string, token: string): Promise<void>
       const areServicesHealthy = services.length > 0 && services.every((service) => ["ACTIVE_HEALTHY", "HEALTHY", "ACTIVE"].includes(String(service.status)));
       // Supabase has returned both top-level and per-service health shapes over
       // time. Accept either positive signal; do not strand a healthy project.
-      if (isHealthyStatus || areServicesHealthy) return;
+      if (isHealthyStatus || areServicesHealthy) return true;
     }
     await wait(3000);
   }
-  throw new Error("Supabase project was created but did not become healthy within four minutes. No repository or Vercel project was created. Check the Supabase dashboard, then resume this installation from its recorded project reference.");
+  return false;
 }
 
 type OAuthToken = { accessToken: string; refreshToken?: string; expiresAt?: number };
@@ -213,8 +214,9 @@ export async function POST(request: NextRequest) {
       if (!supabaseProject.ref) throw new Error("Supabase did not return a project reference.");
     }
     resumableJob = { ...savedJob, projectRef: supabaseProject.ref, databasePassword, projectName };
-    logs.push("Supabase project created. Waiting for database services to become healthy...");
-    await waitForSupabaseProject(supabaseProject.ref, supabaseToken);
+    logs.push("Supabase project created. Checking database service readiness...");
+    const healthConfirmed = await waitForSupabaseProject(supabaseProject.ref, supabaseToken);
+    if (!healthConfirmed) logs.push("Supabase health was not yet reported; continuing with its service APIs and preserving this installation if they are still initializing.");
 
     const apiKeysResponse = await fetch(`https://api.supabase.com/v1/projects/${supabaseProject.ref}/api-keys?reveal=true`, {
       headers: bearerHeaders(supabaseToken),
