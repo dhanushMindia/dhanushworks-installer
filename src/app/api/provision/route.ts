@@ -284,7 +284,11 @@ export async function POST(request: NextRequest) {
     resumableJob = { ...savedJob, projectRef: supabaseProject.ref, databasePassword, projectName };
     logs.push("Supabase project created. Checking database service readiness...");
     const healthConfirmed = await waitForSupabaseProject(supabaseProject.ref, supabaseToken);
-    if (!healthConfirmed) return respond({ success: false, code: "SUPABASE_NOT_READY", error: "Supabase is still provisioning its database and storage services. This installation is saved; retry once the project reports ACTIVE_HEALTHY." }, { status: 425 }, resumableJob);
+    // The dashboard can report a healthy project while the health endpoint
+    // omits the service names this endpoint has used in other API versions.
+    // Treat it as a useful progress signal only; the secret-key and Storage
+    // calls below are the authoritative readiness checks for this workflow.
+    if (!healthConfirmed) logs.push("Supabase health details are still incomplete; validating readiness with its API-key and Storage services instead.");
 
     const supabaseServiceKey = await getSupabaseSecretKey(supabaseProject.ref, supabaseToken);
     if (!supabaseServiceKey) throw new Error("Supabase did not provide a server-side API key. The project was created, but deployment has not started.");
