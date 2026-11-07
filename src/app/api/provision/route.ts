@@ -323,7 +323,13 @@ export async function POST(request: NextRequest) {
           headers: githubHeaders(githubToken),
           body: JSON.stringify({ name: githubRepoName, description: `Research portfolio — ${researchFocus}`, private: true, auto_init: false }),
         });
-        if (!createResponse.ok) throw new Error(`GitHub repository creation failed: ${await providerError(createResponse)}`);
+        if (!createResponse.ok) {
+          const createMessage = await providerError(createResponse);
+          if (/resource not accessible by integration/i.test(createMessage)) {
+            throw new Error("GitHub OAuth is connected but this GitHub app was not granted repository creation/write access. Reconnect GitHub and approve repository access for the installer, then resume this saved installation.");
+          }
+          throw new Error(`GitHub repository creation failed: ${createMessage}`);
+        }
         const created = await json<{ html_url: string; id: number; default_branch?: string }>(createResponse);
         repository = { htmlUrl: created.html_url, id: created.id, defaultBranch: created.default_branch || "main" };
         resumableJob = { ...resumableJob, repository };

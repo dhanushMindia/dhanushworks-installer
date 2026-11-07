@@ -58,13 +58,9 @@ export default function InstallerWizard() {
     window.location.assign(data.url);
   };
 
-  const executeProvisioning = async (dryRun = false, resumeAttempt = 0) => {
+  const executeProvisioning = async (dryRun = false) => {
     setIsProvisioning(true);
-    if (resumeAttempt === 0) {
-      setProvisionLogs([dryRun ? "Initiating dry-run validation (no external mutations)..." : "Initiating live provisioning sequence..."]);
-    } else {
-      setProvisionLogs((previous) => [...previous, `Continuing the recorded installation automatically (attempt ${resumeAttempt + 1})...`]);
-    }
+    setProvisionLogs([dryRun ? "Initiating dry-run validation (no external mutations)..." : "Initiating live provisioning sequence..."]);
     setErrorDetails(null);
 
     try {
@@ -97,14 +93,7 @@ export default function InstallerWizard() {
       } else {
         setProvisionLogs((prev) => [...prev, `ERROR: ${data.error}`]);
         setErrorDetails(data.error);
-        // A cloud database can report a transient readiness state while it is
-        // already being created. The server has recorded its reference in an
-        // encrypted, HttpOnly cookie, so continue it without making the
-        // researcher press the button again or creating a second project.
-        if (!dryRun && data.resumable && resumeAttempt < 3) {
-          setProvisionLogs((prev) => [...prev, "The database is still settling. Continuing automatically in 10 seconds — do not start a second installation."]);
-          window.setTimeout(() => void executeProvisioning(false, resumeAttempt + 1), 10_000);
-        }
+        if (!dryRun && data.resumable) setProvisionLogs((previous) => [...previous, "The installation is saved safely. Resolve the displayed provider error, then use Execute Live Provisioning once to resume without creating duplicate resources."]);
       }
     } catch (err: any) {
       setErrorDetails(err.message || "Provisioning request failed.");
