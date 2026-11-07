@@ -87,9 +87,10 @@ async function verifyProviders(githubToken: string, supabaseToken: string, verce
   const [githubResponse, supabaseResponse, vercelResponse] = await Promise.all([
     fetch("https://api.github.com/user", { headers: githubHeaders(githubToken) }),
     fetch("https://api.supabase.com/v1/organizations", { headers: bearerHeaders(supabaseToken) }),
-    // Verify against the same REST API used for project creation. OIDC userinfo
-    // alone only proves sign-in; it does not prove deployment access.
-    fetch("https://api.vercel.com/v2/user", { headers: bearerHeaders(vercelToken) }),
+    // Read the resource type the installer will actually manage. `v2/user`
+    // needs the optional Vercel `user` permission and can return 404 even for
+    // a valid deploy-scoped OAuth token, so it is not a useful deploy check.
+    fetch("https://api.vercel.com/v9/projects?limit=1", { headers: bearerHeaders(vercelToken) }),
   ]);
 
   if (!githubResponse.ok) throw new Error(`GitHub OAuth verification failed (${githubResponse.status}): ${await providerError(githubResponse)}`);
@@ -97,7 +98,7 @@ async function verifyProviders(githubToken: string, supabaseToken: string, verce
   if (!vercelResponse.ok) {
     const detail = await providerError(vercelResponse);
     const guidance = vercelResponse.status === 403
-      ? " The Vercel OAuth app is connected but lacks Vercel API permissions. Enable its user, project, project-environment-variable, and deployment permissions, then reconnect Vercel."
+      ? " The Vercel OAuth app is connected but lacks Vercel API permissions. Enable its project, project-environment-variable, and deployment permissions, then reconnect Vercel."
       : vercelResponse.status === 401
         ? " Reconnect Vercel to renew its OAuth authorization."
         : "";
