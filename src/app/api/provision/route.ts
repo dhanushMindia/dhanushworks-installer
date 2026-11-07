@@ -20,9 +20,12 @@ const bearerHeaders = (token: string) => ({
 
 const json = <T>(response: Response) => response.json() as Promise<T>;
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const noStore = (body: unknown, init: ResponseInit = {}, resume?: unknown) => {
+const noStore = (body: unknown, init: ResponseInit = {}, resume?: unknown, oauthUpdates: Partial<Record<Provider, OAuthToken>> = {}) => {
   const response = NextResponse.json(body, { ...init, headers: { "Cache-Control": "no-store", ...init.headers } });
   if (resume) response.cookies.set("__Host-installer-provision", encrypt(resume), { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 6 });
+  for (const [provider, token] of Object.entries(oauthUpdates) as Array<[Provider, OAuthToken]>) {
+    response.cookies.set(cookieName(provider), encrypt(token), { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 30 });
+  }
   return response;
 };
 
@@ -89,9 +92,17 @@ async function verifyProviders(githubToken: string, supabaseToken: string, verce
     fetch("https://api.vercel.com/v2/user", { headers: bearerHeaders(vercelToken) }),
   ]);
 
-  if (!githubResponse.ok) throw new Error("GitHub token verification failed.");
-  if (!supabaseResponse.ok) throw new Error("Supabase Management token verification failed.");
-  if (!vercelResponse.ok) throw new Error("Vercel token verification failed.");
+  if (!githubResponse.ok) throw new Error(`GitHub OAuth verification failed (${githubResponse.status}): ${await providerError(githubResponse)}`);
+  if (!supabaseResponse.ok) throw new Error(`Supabase OAuth verification failed (${supabaseResponse.status}): ${await providerError(supabaseResponse)}`);
+  if (!vercelResponse.ok) {
+    const detail = await providerError(vercelResponse);
+    const guidance = vercelResponse.status === 403
+      ? " The Vercel OAuth app is connected but lacks Vercel API permissions. Enable its user, project, project-environment-variable, and deployment permissions, then reconnect Vercel."
+      : vercelResponse.status === 401
+        ? " Reconnect Vercel to renew its OAuth authorization."
+        : "";
+    throw new Error(`Vercel OAuth verification failed (${vercelResponse.status}): ${detail}.${guidance}`);
+  }
 
   const [github, organizations, vercel] = await Promise.all([
     json<{ login: string }>(githubResponse),
@@ -135,17 +146,59 @@ type ResumeJob = {
   repository?: Repository;
   vercelProjectId?: string;
 };
-function oauthToken(request: NextRequest, provider: Provider): string | undefined {
-  return decrypt<OAuthToken>(request.cookies.get(cookieName(provider))?.value)?.accessToken;
+async function oauthToken(
+  request: NextRequest,
+  provider: Provider,
+  updates: Partial<Record<Provider, OAuthToken>>,
+): Promise<string | undefined> {
+  const current = decrypt<OAuthToken>(request.cookies.get(cookieName(provider))?.value);
+  if (!current?.accessToken) return undefined;
+
+  // Vercel access tokens are deliberately short-lived (one hour). Refresh a
+  // little early so a long provisioning request cannot fail halfway through.
+  if (!current.expiresAt || current.expiresAt > Date.now() + 60_000) return current.accessToken;
+  if (!current.refreshToken) throw new Error(`${provider[0].toUpperCase()}${provider.slice(1)} OAuth authorization expired. Connect that account again.`);
+
+  const clientId = process.env[`${provider.toUpperCase()}_OAUTH_CLIENT_ID`];
+  const clientSecret = process.env[`${provider.toUpperCase()}_OAUTH_CLIENT_SECRET`];
+  if (!clientId || !clientSecret) throw new Error(`${provider[0].toUpperCase()}${provider.slice(1)} OAuth is not configured on this installer.`);
+
+  const tokenUrl = provider === "github"
+    ? "https://github.com/login/oauth/access_token"
+    : provider === "supabase"
+      ? "https://api.supabase.com/v1/oauth/token"
+      : "https://api.vercel.com/login/oauth/token";
+  const body = new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refreshToken });
+  const headers: HeadersInit = { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" };
+  if (provider === "supabase") {
+    headers.Authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
+  } else {
+    body.set("client_id", clientId);
+    body.set("client_secret", clientSecret);
+  }
+  const refreshedResponse = await fetch(tokenUrl, { method: "POST", headers, body });
+  const refreshed = await refreshedResponse.json().catch(() => null) as { access_token?: string; refresh_token?: string; expires_in?: number } | null;
+  if (!refreshedResponse.ok || !refreshed?.access_token) {
+    throw new Error(`${provider[0].toUpperCase()}${provider.slice(1)} OAuth authorization expired. Connect that account again.`);
+  }
+  const next: OAuthToken = {
+    accessToken: refreshed.access_token,
+    refreshToken: refreshed.refresh_token || current.refreshToken,
+    expiresAt: refreshed.expires_in ? Date.now() + refreshed.expires_in * 1000 : undefined,
+  };
+  updates[provider] = next;
+  return next.accessToken;
 }
 
 export async function POST(request: NextRequest) {
   let resumableJob: ResumeJob | undefined;
+  const oauthUpdates: Partial<Record<Provider, OAuthToken>> = {};
+  const respond = (body: unknown, init: ResponseInit = {}, resume?: unknown) => noStore(body, init, resume, oauthUpdates);
   try {
     const body = await request.json();
-    const githubToken = requireString(body.githubToken || oauthToken(request, "github"), "GitHub authorization");
-    const supabaseToken = requireString(body.supabaseToken || oauthToken(request, "supabase"), "Supabase authorization");
-    const vercelToken = requireString(oauthToken(request, "vercel"), "Vercel OAuth authorization");
+    const githubToken = requireString(await oauthToken(request, "github", oauthUpdates), "GitHub OAuth authorization");
+    const supabaseToken = requireString(await oauthToken(request, "supabase", oauthUpdates), "Supabase OAuth authorization");
+    const vercelToken = requireString(await oauthToken(request, "vercel", oauthUpdates), "Vercel OAuth authorization");
     const githubRepoName = requireString(body.githubRepoName, "GitHub repository name");
     const name = requireString(body.name, "Researcher name");
     const title = requireString(body.title, "Professional title");
@@ -155,10 +208,10 @@ export async function POST(request: NextRequest) {
     const dryRun = body.dryRun === true;
 
     if (!validRepositoryName(githubRepoName)) {
-      return noStore({ success: false, error: "Repository names may contain only letters, numbers, periods, underscores, and hyphens." }, { status: 400 });
+      return respond({ success: false, error: "Repository names may contain only letters, numbers, periods, underscores, and hyphens." }, { status: 400 });
     }
     if (adminPassword.length < 12) {
-      return noStore({ success: false, error: "Use an administrator password with at least 12 characters." }, { status: 400 });
+      return respond({ success: false, error: "Use an administrator password with at least 12 characters." }, { status: 400 });
     }
 
     const logs = ["Verifying GitHub, Supabase, and Vercel credentials in parallel..."];
@@ -174,7 +227,7 @@ export async function POST(request: NextRequest) {
     });
     const resumeRepository = savedJob?.repository;
     if (existingRepo.ok && !(resumeRepository && savedJob?.projectName === `${githubRepoName}-db`.slice(0, 60))) {
-      return noStore({ success: false, error: `Repository '${githubRepoName}' already exists for ${github.login}. Choose a different name.` }, { status: 409 });
+      return respond({ success: false, error: `Repository '${githubRepoName}' already exists for ${github.login}. Choose a different name.` }, { status: 409 });
     }
     if (!existingRepo.ok && existingRepo.status !== 404) throw new Error("GitHub could not check whether the requested repository name is available.");
 
@@ -184,7 +237,7 @@ export async function POST(request: NextRequest) {
 
     if (dryRun) {
       logs.push("Dry run passed: credentials, Supabase organization, and repository availability were verified.");
-      return noStore({ success: true, dryRun: true, logs });
+      return respond({ success: true, dryRun: true, logs });
     }
 
     const authSecret = randomBytes(32).toString("base64url");
@@ -198,13 +251,13 @@ export async function POST(request: NextRequest) {
     } else {
       const existingProjects = await fetch(`https://api.supabase.com/v1/projects?organization_slug=${encodeURIComponent(organizationSlug)}`, { headers: bearerHeaders(supabaseToken) });
       const projects = existingProjects.ok ? await json<Array<{ name?: string; ref?: string }>>(existingProjects) : [];
-      if (projects.some((project) => project.name === projectName)) return noStore({ success: false, code: "EXISTING_UNRECOVERABLE_PROJECT", error: `A Supabase project named '${projectName}' already exists from an earlier interrupted attempt. To prevent a duplicate, the installer will not create another. Delete that test project or contact support to resume it with its original database password.` }, { status: 409 });
+      if (projects.some((project) => project.name === projectName)) return respond({ success: false, code: "EXISTING_UNRECOVERABLE_PROJECT", error: `A Supabase project named '${projectName}' already exists from an earlier interrupted attempt. To prevent a duplicate, the installer will not create another. Delete that test project or contact support to resume it with its original database password.` }, { status: 409 });
       databasePassword = randomBytes(32).toString("base64url");
       logs.push("Creating an independent Supabase project...");
       const supabaseProjectResponse = await fetch("https://api.supabase.com/v1/projects", { method: "POST", headers: bearerHeaders(supabaseToken), body: JSON.stringify({ name: projectName, organization_slug: organizationSlug, db_pass: databasePassword, region_selection: { type: "smartGroup", code: regionGroup } }) });
       if (!supabaseProjectResponse.ok) {
         const message = await providerError(supabaseProjectResponse);
-        if (/maximum limits for the number of active free projects/i.test(message)) return noStore({ success: false, code: "SUPABASE_FREE_PROJECT_LIMIT", error: "Supabase cannot create another free project for this organization because its active free-project limit has been reached. No GitHub repository or Vercel project was created. Pause, delete, or upgrade an existing Supabase project, then start a fresh installation." }, { status: 409 });
+        if (/maximum limits for the number of active free projects/i.test(message)) return respond({ success: false, code: "SUPABASE_FREE_PROJECT_LIMIT", error: "Supabase cannot create another free project for this organization because its active free-project limit has been reached. No GitHub repository or Vercel project was created. Pause, delete, or upgrade an existing Supabase project, then start a fresh installation." }, { status: 409 });
         throw new Error(`Supabase project creation failed: ${message}`);
       }
       supabaseProject = await json<{ ref: string }>(supabaseProjectResponse);
@@ -316,7 +369,7 @@ export async function POST(request: NextRequest) {
     const deployment = await json<{ url?: string }>(deploymentResponse);
     logs.push("Deployment has started. Vercel will run migrations and create the initial administrator before the site becomes ready.");
 
-    return clearResume(noStore({
+    return clearResume(respond({
       success: true,
       logs,
       deployUrl: deployment.url ? `https://${deployment.url}` : deploymentUrl,
@@ -325,6 +378,6 @@ export async function POST(request: NextRequest) {
     }));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Provisioning failed.";
-    return noStore({ success: false, error: message, resumable: Boolean(resumableJob) }, { status: 400 }, resumableJob);
+    return respond({ success: false, error: message, resumable: Boolean(resumableJob) }, { status: 400 }, resumableJob);
   }
 }

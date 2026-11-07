@@ -7,9 +7,6 @@ import {
   ArrowRight,
   ArrowLeft,
   ExternalLink,
-  Terminal,
-  Settings,
-  Key,
 } from "lucide-react";
 
 export default function InstallerWizard() {
@@ -24,9 +21,6 @@ export default function InstallerWizard() {
     theme: "editorial",
     supabaseOrganizationSlug: "",
     supabaseRegion: "apac",
-    githubToken: "",
-    supabaseToken: "",
-    vercelToken: "",
   });
 
   const [providerStatus, setProviderStatus] = useState({
@@ -36,7 +30,6 @@ export default function InstallerWizard() {
   });
 
   const [errorDetails, setErrorDetails] = useState<string | null>(null);
-  const [isVerifying, setIsVerifying] = useState(false);
   const [isProvisioning, setIsProvisioning] = useState(false);
   const [provisionLogs, setProvisionLogs] = useState<string[]>([]);
   const [deployResult, setDeployResult] = useState<{ deployUrl?: string; repoUrl?: string } | null>(null);
@@ -59,45 +52,10 @@ export default function InstallerWizard() {
   };
 
   const preserveDraftForOAuth = async (provider: "github" | "supabase" | "vercel") => {
-    const { githubToken, supabaseToken, vercelToken, ...draft } = formData;
+    const draft = formData;
     const response = await fetch(`/api/oauth/${provider}/start`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ draft: { ...draft, step } }) });
     const data = await response.json(); if (!response.ok) { setErrorDetails(data.error || "Could not begin provider authorization."); return; }
     window.location.assign(data.url);
-  };
-
-  const verifyProvider = async (provider: "github" | "supabase" | "vercel") => {
-    setIsVerifying(true);
-    setErrorDetails(null);
-
-    const tokenKey = `${provider}Token` as keyof typeof formData;
-    const token = formData[tokenKey];
-
-    if (!token) {
-      setErrorDetails(`Please enter a valid ${provider.toUpperCase()} token before verifying.`);
-      setIsVerifying(false);
-      return;
-    }
-
-    try {
-      const res = await fetch("/api/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, token }),
-      });
-      const data = await res.json();
-
-      if (data.verified) {
-        setProviderStatus((prev) => ({ ...prev, [provider]: "AUTHORIZED" }));
-      } else {
-        setProviderStatus((prev) => ({ ...prev, [provider]: "FAILED" }));
-        setErrorDetails(data.error || `Failed to verify ${provider} credentials.`);
-      }
-    } catch (err) {
-      setProviderStatus((prev) => ({ ...prev, [provider]: "FAILED" }));
-      setErrorDetails(`Network error verifying ${provider}.`);
-    } finally {
-      setIsVerifying(false);
-    }
   };
 
   const executeProvisioning = async (dryRun = false, resumeAttempt = 0) => {
@@ -113,7 +71,18 @@ export default function InstallerWizard() {
       const res = await fetch("/api/provision", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...formData, dryRun }),
+        body: JSON.stringify({
+          name: formData.name,
+          title: formData.title,
+          researchFocus: formData.researchFocus,
+          email: formData.email,
+          adminPassword: formData.adminPassword,
+          githubRepoName: formData.githubRepoName,
+          theme: formData.theme,
+          supabaseOrganizationSlug: formData.supabaseOrganizationSlug,
+          supabaseRegion: formData.supabaseRegion,
+          dryRun,
+        }),
       });
       const data = await res.json();
 
@@ -175,8 +144,8 @@ export default function InstallerWizard() {
         <div className="mb-10">
           <div className="grid grid-cols-4 gap-2 mb-3 text-xs font-mono text-stone-500 uppercase tracking-wider">
             <span className={step >= 1 ? "text-stone-900 font-semibold" : ""}>1. Profile</span>
-            <span className={step >= 2 ? "text-stone-900 font-semibold" : ""}>2. Tokens</span>
-            <span className={step >= 3 ? "text-stone-900 font-semibold" : ""}>3. Verify</span>
+            <span className={step >= 2 ? "text-stone-900 font-semibold" : ""}>2. Connect</span>
+            <span className={step >= 3 ? "text-stone-900 font-semibold" : ""}>3. Review</span>
             <span className={step >= 4 ? "text-stone-900 font-semibold" : ""}>4. Deploy</span>
           </div>
           <div className="h-1 w-full bg-stone-200 rounded-full overflow-hidden">
@@ -309,79 +278,33 @@ export default function InstallerWizard() {
                 onClick={() => setStep(2)}
                 className="px-5 py-2 bg-stone-900 hover:bg-stone-800 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
               >
-                Continue to Tokens <ArrowRight className="w-4 h-4" />
+                Continue to connections <ArrowRight className="w-4 h-4" />
               </button>
             </div>
           </div>
         )}
 
-        {/* Step 2: API Tokens */}
+        {/* Step 2: OAuth connections */}
         {step === 2 && (
           <div className="space-y-6 bg-white border border-stone-200 rounded-xl p-8 shadow-sm">
             <div>
-              <h2 className="text-xl font-medium tracking-tight text-stone-900">Cloud Provider API Tokens</h2>
+              <h2 className="text-xl font-medium tracking-tight text-stone-900">Connect your accounts</h2>
               <p className="text-stone-600 mt-2 text-sm">
-                Connect each provider securely with OAuth. Personal access tokens remain available only as a controlled recovery path.
+                Authorize GitHub, Supabase, and Vercel with OAuth. Credentials stay in encrypted, HttpOnly browser cookies and are never pasted into this form.
               </p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 gap-3">
               {(["github", "supabase", "vercel"] as const).map((provider) => (
-                <button key={provider} onClick={() => preserveDraftForOAuth(provider)} className={`rounded-lg border px-3 py-2 text-center text-xs font-medium ${providerStatus[provider] === "AUTHORIZED" ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-stone-300 text-stone-800 hover:bg-stone-100"}`}>
-                  {providerStatus[provider] === "AUTHORIZED" ? `${provider[0].toUpperCase() + provider.slice(1)} connected ✓` : `Connect ${provider[0].toUpperCase() + provider.slice(1)} with OAuth`}
-                </button>
+                <div key={provider} className="rounded-lg border border-stone-200 bg-stone-50 p-4 flex items-center justify-between gap-4">
+                  <div><h3 className="text-sm font-medium text-stone-900 capitalize">{provider}</h3><p className="mt-1 text-xs text-stone-500">{providerStatus[provider] === "AUTHORIZED" ? "Connected with OAuth" : "Required for automated portfolio setup"}</p></div>
+                  <button onClick={() => preserveDraftForOAuth(provider)} className={`shrink-0 rounded-lg px-3 py-2 text-xs font-medium ${providerStatus[provider] === "AUTHORIZED" ? "border border-emerald-300 bg-emerald-50 text-emerald-800" : "bg-stone-900 text-white hover:bg-stone-800"}`}>{providerStatus[provider] === "AUTHORIZED" ? "Connected ✓" : `Connect ${provider[0].toUpperCase() + provider.slice(1)}`}</button>
+                </div>
               ))}
             </div>
 
             {oauthNotice && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{oauthNotice}</div>}
             {errorDetails && <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">{errorDetails}</div>}
-
-            <div className="space-y-4 pt-2 hidden">
-              <div>
-                <label className="block text-xs font-mono text-stone-600 uppercase tracking-wider mb-1.5">
-                  GitHub Personal Access Token (PAT with <span className="text-stone-900 font-semibold">repo</span> scope)
-                </label>
-                <input
-                  type="password"
-                  name="githubToken"
-                  value={formData.githubToken}
-                  onChange={handleInputChange}
-                  autoComplete="off"
-                  placeholder="ghp_..."
-                  className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm font-mono focus:outline-none focus:border-stone-900"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-mono text-stone-600 uppercase tracking-wider mb-1.5">
-                  Vercel deployment token (<span className="text-stone-900 font-semibold">Account Settings &gt; Tokens</span>)
-                </label>
-                <input
-                  type="password"
-                  name="vercelToken"
-                  value={formData.vercelToken}
-                  onChange={handleInputChange}
-                  autoComplete="off"
-                  placeholder="vercel_token_..."
-                  className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm font-mono focus:outline-none focus:border-stone-900"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-mono text-stone-600 uppercase tracking-wider mb-1.5">
-                  Supabase Management Token (<span className="text-stone-900 font-semibold text-red-600">Mandatory</span>)
-                </label>
-                <input
-                  type="password"
-                  name="supabaseToken"
-                  value={formData.supabaseToken}
-                  onChange={handleInputChange}
-                  autoComplete="off"
-                  placeholder="sbp_..."
-                  className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3 py-2 text-stone-900 text-sm font-mono focus:outline-none focus:border-stone-900"
-                />
-              </div>
-            </div>
 
             <div className="flex justify-between pt-6 border-t border-stone-100">
               <button
@@ -391,22 +314,23 @@ export default function InstallerWizard() {
                 <ArrowLeft className="w-4 h-4" /> Back
               </button>
               <button
+                disabled={!allAuthorized}
                 onClick={() => setStep(3)}
-                className="px-5 py-2 bg-stone-900 hover:bg-stone-800 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
+                className={`px-5 py-2 text-sm font-medium rounded-lg transition-colors flex items-center gap-2 ${allAuthorized ? "bg-stone-900 hover:bg-stone-800 text-white" : "bg-stone-200 text-stone-400 cursor-not-allowed"}`}
               >
-                Verify Credentials <ArrowRight className="w-4 h-4" />
+                Continue <ArrowRight className="w-4 h-4" />
               </button>
             </div>
           </div>
         )}
 
-        {/* Step 3: Verification */}
+        {/* Step 3: review */}
         {step === 3 && (
           <div className="space-y-6 bg-white border border-stone-200 rounded-xl p-8 shadow-sm">
             <div>
-              <h2 className="text-xl font-medium tracking-tight text-stone-900">Credential Verification</h2>
+              <h2 className="text-xl font-medium tracking-tight text-stone-900">Ready to validate</h2>
               <p className="text-stone-600 mt-2 text-sm">
-                Test the connected accounts or deployment tokens against the provider APIs before initiating deployment.
+                The installer will validate live OAuth permissions immediately before it creates anything. No manual token verification is needed.
               </p>
             </div>
 
@@ -417,70 +341,7 @@ export default function InstallerWizard() {
               </div>
             )}
 
-            <div className="space-y-3 pt-2">
-              <div className="p-4 rounded-lg bg-stone-50 border border-stone-200 flex items-center justify-between">
-                <div>
-                  <h3 className="font-medium text-stone-900 text-sm">GitHub API</h3>
-                  <p className="text-xs text-stone-500 font-mono mt-0.5">Tests template generation scope</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className={`px-2.5 py-1 rounded text-xs font-mono font-medium ${
-                    providerStatus.github === "AUTHORIZED" ? "bg-emerald-100 text-emerald-800" : "bg-stone-200 text-stone-700"
-                  }`}>
-                    {providerStatus.github}
-                  </span>
-                  <button
-                    onClick={() => verifyProvider("github")}
-                    disabled={isVerifying}
-                    className="px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800 transition-colors"
-                  >
-                    Verify GitHub
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-4 rounded-lg bg-stone-50 border border-stone-200 flex items-center justify-between">
-                <div>
-                  <h3 className="font-medium text-stone-900 text-sm">Supabase API</h3>
-                  <p className="text-xs text-stone-500 font-mono mt-0.5">Tests management API token</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className={`px-2.5 py-1 rounded text-xs font-mono font-medium ${
-                    providerStatus.supabase === "AUTHORIZED" ? "bg-emerald-100 text-emerald-800" : "bg-stone-200 text-stone-700"
-                  }`}>
-                    {providerStatus.supabase}
-                  </span>
-                  <button
-                    onClick={() => verifyProvider("supabase")}
-                    disabled={isVerifying}
-                    className="px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800 transition-colors"
-                  >
-                    Verify Supabase
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-4 rounded-lg bg-stone-50 border border-stone-200 flex items-center justify-between">
-                <div>
-                  <h3 className="font-medium text-stone-900 text-sm">Vercel API</h3>
-                  <p className="text-xs text-stone-500 font-mono mt-0.5">Tests project creation & deploy scope</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className={`px-2.5 py-1 rounded text-xs font-mono font-medium ${
-                    providerStatus.vercel === "AUTHORIZED" ? "bg-emerald-100 text-emerald-800" : "bg-stone-200 text-stone-700"
-                  }`}>
-                    {providerStatus.vercel}
-                  </span>
-                  <button
-                    onClick={() => verifyProvider("vercel")}
-                    disabled={isVerifying}
-                    className="px-3 py-1.5 bg-stone-900 text-white text-xs font-medium rounded hover:bg-stone-800 transition-colors"
-                  >
-                    Verify Vercel
-                  </button>
-                </div>
-              </div>
-            </div>
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">GitHub, Supabase, and Vercel are connected. Continue to run a safe, no-change validation first.</div>
 
             <div className="flex justify-between pt-6 border-t border-stone-100">
               <button
@@ -498,7 +359,7 @@ export default function InstallerWizard() {
                     : "bg-stone-200 text-stone-400 cursor-not-allowed"
                 }`}
               >
-                Proceed to Deploy <ArrowRight className="w-4 h-4" />
+                Review deployment <ArrowRight className="w-4 h-4" />
               </button>
             </div>
           </div>
