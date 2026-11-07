@@ -15,10 +15,11 @@ async function begin(request: NextRequest, provider: Provider, draft?: unknown) 
     ? new URL("https://github.com/login/oauth/authorize")
     : provider === "supabase"
       ? new URL("https://api.supabase.com/v1/oauth/authorize")
-      : integration
-        ? new URL(`https://vercel.com/integrations/${process.env.VERCEL_INTEGRATION_SLUG}`)
-        : new URL("https://vercel.com/oauth/authorize");
-  if (!integration) {
+      : new URL("https://vercel.com/oauth/authorize");
+  // An Integration receives a project-scoped authorization code from the same
+  // authorization endpoint. Its private marketplace URL intentionally returns
+  // 404, so it must never be used as the OAuth entry point.
+  {
     authorize.searchParams.set("client_id", clientId); authorize.searchParams.set("redirect_uri", redirect.toString()); authorize.searchParams.set("response_type", "code"); authorize.searchParams.set("state", state); authorize.searchParams.set("code_challenge", challenge(verifier)); authorize.searchParams.set("code_challenge_method", "S256");
   }
   if (provider === "github") authorize.searchParams.set("scope", "repo");

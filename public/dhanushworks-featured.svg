@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="1" stop-color="#142b47"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#54e0b8"/>
+      <stop offset="1" stop-color="#6da8ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#bg)"/>
+  <circle cx="1610" cy="180" r="440" fill="#183b60" opacity=".35"/>
+  <circle cx="250" cy="980" r="480" fill="#0b624f" opacity=".24"/>
+  <rect x="150" y="148" width="1620" height="784" rx="38" fill="#0a1727" stroke="#31516f" stroke-width="3"/>
+  <rect x="230" y="240" width="150" height="150" rx="30" fill="url(#accent)"/>
+  <path d="M278 284h54v22h-54zm0 40h54v22h-54z" fill="#07111f"/>
+  <text x="230" y="530" fill="#f5f9ff" font-family="Arial, Helvetica, sans-serif" font-size="104" font-weight="700">Dhanushworks Installer</text>
+  <text x="230" y="630" fill="#b9c9dc" font-family="Arial, Helvetica, sans-serif" font-size="46">Build and deploy a complete research portfolio in one flow.</text>
+  <rect x="230" y="718" width="390" height="72" rx="36" fill="#17334d"/>
+  <text x="278" y="766" fill="#65e0bd" font-family="Arial, Helvetica, sans-serif" font-size="33" font-weight="700">GITHUB  +  SUPABASE  +  VERCEL</text>
+  <path d="M1315 505l120-120 120 120-120 120z" fill="#54e0b8" opacity=".92"/>
+  <path d="M1435 385v240M1315 505h240" stroke="#07111f" stroke-width="22" opacity=".7"/>
+</svg>
