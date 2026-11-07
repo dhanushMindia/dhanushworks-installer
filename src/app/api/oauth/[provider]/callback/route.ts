@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { callbackUrl, cookieName, encrypt, stateMatches, type Provider } from "@/lib/oauth";
+import { callbackUrl, cookieName, encrypt, stateMatches, type Provider, usesVercelIntegration, vercelApiUrl } from "@/lib/oauth";
 
 const providers = ["github", "supabase", "vercel"] as const;
 export async function GET(request: NextRequest, { params }: { params: Promise<{ provider: string }> }) {
@@ -11,18 +11,20 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   if (!providers.includes(provider)) return fail("Unknown OAuth provider.");
   if (error) return fail(request.nextUrl.searchParams.get("error_description") || error);
   if (!code) return fail("Authorization code was not returned by the provider.");
-  if (!stateMatches(request.nextUrl.searchParams.get("state") || undefined, request.cookies.get(`__Host-oauth-state-${provider}`)?.value)) return fail("The authorization session expired or state validation failed. Start the connection again.");
-  const verifier = request.cookies.get(`__Host-oauth-verifier-${provider}`)?.value; if (!verifier) return fail("The PKCE verifier was not found. Start the connection again.");
+  const integration = provider === "vercel" && usesVercelIntegration();
+  if (!integration && !stateMatches(request.nextUrl.searchParams.get("state") || undefined, request.cookies.get(`__Host-oauth-state-${provider}`)?.value)) return fail("The authorization session expired or state validation failed. Start the connection again.");
+  const verifier = request.cookies.get(`__Host-oauth-verifier-${provider}`)?.value; if (!integration && !verifier) return fail("The PKCE verifier was not found. Start the connection again.");
   const clientId = process.env[`${provider.toUpperCase()}_OAUTH_CLIENT_ID`]!, clientSecret = process.env[`${provider.toUpperCase()}_OAUTH_CLIENT_SECRET`]!;
-  // This app is a Sign in with Vercel OIDC application. Its Authorization Code
-  // exchange lives on the Sign in with Vercel token endpoint, using client_secret_post.
-  const tokenUrl = provider === "github" ? "https://github.com/login/oauth/access_token" : provider === "supabase" ? "https://api.supabase.com/v1/oauth/token" : "https://api.vercel.com/login/oauth/token";
-  const body = new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: callbackUrl(provider), code_verifier: verifier });
+  // A Vercel Integration exchanges its installation code at the Integrations
+  // endpoint; the legacy Sign in with Vercel client still uses its OIDC endpoint.
+  const tokenUrl = provider === "github" ? "https://github.com/login/oauth/access_token" : provider === "supabase" ? "https://api.supabase.com/v1/oauth/token" : integration ? "https://api.vercel.com/v2/oauth/access_token" : "https://api.vercel.com/login/oauth/token";
+  const body = new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: callbackUrl(provider) });
+  if (!integration) body.set("code_verifier", verifier!);
   if (provider !== "supabase") { body.set("client_id", clientId); body.set("client_secret", clientSecret); }
   const headers: HeadersInit = { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" };
   if (provider === "supabase") headers.Authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
   const tokenResponse = await fetch(tokenUrl, { method: "POST", headers, body });
-  const token = await tokenResponse.json().catch(() => null) as { access_token?: string; refresh_token?: string; expires_in?: number; error?: unknown; error_description?: unknown; message?: unknown } | null;
+  const token = await tokenResponse.json().catch(() => null) as { access_token?: string; refresh_token?: string; expires_in?: number; team_id?: string | null; error?: unknown; error_description?: unknown; message?: unknown } | null;
   const safeProviderError = (payload: typeof token) => {
     if (!payload) return undefined;
     for (const value of [payload.error_description, payload.message, payload.error]) {
@@ -32,10 +34,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return undefined;
   };
   if (!tokenResponse.ok || !token?.access_token) return fail(safeProviderError(token) || `Token exchange failed (${tokenResponse.status}).`);
-  const identityUrl = provider === "github" ? "https://api.github.com/user" : provider === "supabase" ? "https://api.supabase.com/v1/organizations" : "https://api.vercel.com/login/oauth/userinfo";
+  const identityUrl = provider === "github" ? "https://api.github.com/user" : provider === "supabase" ? "https://api.supabase.com/v1/organizations" : integration ? vercelApiUrl("/v9/projects?limit=1", token.team_id || undefined) : "https://api.vercel.com/login/oauth/userinfo";
   const identity = await fetch(identityUrl, { headers: { Authorization: `Bearer ${token.access_token}`, Accept: "application/json", "User-Agent": "Dhanushworks-Installer" } });
   if (!identity.ok) return fail(`Token exchange succeeded, but permission verification failed (${identity.status}). Re-authorize with the required permissions.`);
   const response = NextResponse.redirect(new URL(`/?oauth=${provider}`, request.url));
-  response.cookies.set(cookieName(provider), encrypt({ accessToken: token.access_token, refreshToken: token.refresh_token, expiresAt: token.expires_in ? Date.now() + token.expires_in * 1000 : undefined }), { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 30 });
+  response.cookies.set(cookieName(provider), encrypt({ accessToken: token.access_token, refreshToken: token.refresh_token, expiresAt: token.expires_in ? Date.now() + token.expires_in * 1000 : undefined, teamId: token.team_id || undefined }), { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 30 });
   response.cookies.delete(`__Host-oauth-state-${provider}`); response.cookies.delete(`__Host-oauth-verifier-${provider}`); return response;
 }

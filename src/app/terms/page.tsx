@@ -1,0 +1,3 @@
+export default function TermsPage() {
+  return <main className="mx-auto max-w-3xl p-8 text-slate-900"><h1 className="text-3xl font-bold">Terms of Use</h1><p className="mt-6">Dhanushworks Installer provisions cloud resources only after a user authorizes the relevant provider. Users remain responsible for their accounts, content, provider costs, and compliance with each provider&apos;s terms.</p><p className="mt-4">The service is provided as-is for portfolio deployment. Do not use it to deploy unlawful content or to access resources you do not own or control.</p><p className="mt-8 text-sm text-slate-600">Last updated: November 7, 2026.</p></main>;
+}

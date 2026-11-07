@@ -1,6 +1,6 @@
 import { randomBytes } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { cookieName, decrypt, encrypt, type Provider } from "@/lib/oauth";
+import { cookieName, decrypt, encrypt, type Provider, vercelApiUrl } from "@/lib/oauth";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -84,14 +84,14 @@ function extractServiceKey(payload: unknown): string | undefined {
   return visit(payload);
 }
 
-async function verifyProviders(githubToken: string, supabaseToken: string, vercelToken: string) {
+async function verifyProviders(githubToken: string, supabaseToken: string, vercelToken: string, vercelTeamId?: string) {
   const [githubResponse, supabaseResponse, vercelResponse] = await Promise.all([
     fetch("https://api.github.com/user", { headers: githubHeaders(githubToken) }),
     fetch("https://api.supabase.com/v1/organizations", { headers: bearerHeaders(supabaseToken) }),
     // Read the resource type the installer will actually manage. `v2/user`
     // needs the optional Vercel `user` permission and can return 404 even for
     // a valid deploy-scoped OAuth token, so it is not a useful deploy check.
-    fetch("https://api.vercel.com/v9/projects?limit=1", { headers: bearerHeaders(vercelToken) }),
+    fetch(vercelApiUrl("/v9/projects?limit=1", vercelTeamId), { headers: bearerHeaders(vercelToken) }),
   ]);
 
   if (!githubResponse.ok) throw new Error(`GitHub OAuth verification failed (${githubResponse.status}): ${await providerError(githubResponse)}`);
@@ -99,7 +99,7 @@ async function verifyProviders(githubToken: string, supabaseToken: string, verce
   if (!vercelResponse.ok) {
     const detail = await providerError(vercelResponse);
     const guidance = vercelResponse.status === 403
-      ? " The Vercel OAuth app is connected but lacks Vercel API permissions. Enable its project, project-environment-variable, and deployment permissions, then reconnect Vercel."
+      ? " The Vercel integration is connected but lacks its Projects, Project Environment Variables, or Deployments write scope. Update those integration scopes and reconnect Vercel."
       : vercelResponse.status === 401
         ? " Reconnect Vercel to renew its OAuth authorization."
         : "";
@@ -155,7 +155,7 @@ async function getSupabaseSecretKey(ref: string, token: string): Promise<string 
   return extractServiceKey(await json<unknown>(enable)) || read();
 }
 
-type OAuthToken = { accessToken: string; refreshToken?: string; expiresAt?: number };
+type OAuthToken = { accessToken: string; refreshToken?: string; expiresAt?: number; teamId?: string };
 type Repository = { htmlUrl: string; id: number; defaultBranch?: string };
 type ResumeJob = {
   projectRef: string;
@@ -217,6 +217,7 @@ export async function POST(request: NextRequest) {
     const githubToken = requireString(await oauthToken(request, "github", oauthUpdates), "GitHub OAuth authorization");
     const supabaseToken = requireString(await oauthToken(request, "supabase", oauthUpdates), "Supabase OAuth authorization");
     const vercelToken = requireString(await oauthToken(request, "vercel", oauthUpdates), "Vercel OAuth authorization");
+    const vercelAuthorization = decrypt<OAuthToken>(request.cookies.get(cookieName("vercel"))?.value);
     const githubRepoName = requireString(body.githubRepoName, "GitHub repository name");
     const name = requireString(body.name, "Researcher name");
     const title = requireString(body.title, "Professional title");
@@ -233,7 +234,7 @@ export async function POST(request: NextRequest) {
     }
 
     const logs = ["Verifying GitHub, Supabase, and Vercel credentials in parallel..."];
-    const { github, organizations } = await verifyProviders(githubToken, supabaseToken, vercelToken);
+    const { github, organizations } = await verifyProviders(githubToken, supabaseToken, vercelToken, vercelAuthorization?.teamId);
     const organizationSlug = typeof body.supabaseOrganizationSlug === "string" && body.supabaseOrganizationSlug.trim()
       ? body.supabaseOrganizationSlug.trim()
       : organizations[0]?.slug || organizations[0]?.id;
@@ -399,7 +400,7 @@ export async function POST(request: NextRequest) {
       logs.push("Reusing the Vercel project created by the earlier attempt.");
     } else {
       logs.push("Creating the Vercel project with encrypted environment variables...");
-      const vercelProjectResponse = await fetch("https://api.vercel.com/v11/projects", {
+      const vercelProjectResponse = await fetch(vercelApiUrl("/v11/projects", vercelAuthorization?.teamId), {
         method: "POST",
         headers: bearerHeaders(vercelToken),
         body: JSON.stringify({
@@ -417,7 +418,7 @@ export async function POST(request: NextRequest) {
     }
 
     logs.push("Triggering the first production deployment and database initialization...");
-    const deploymentResponse = await fetch("https://api.vercel.com/v13/deployments", {
+    const deploymentResponse = await fetch(vercelApiUrl("/v13/deployments", vercelAuthorization?.teamId), {
       method: "POST",
       headers: bearerHeaders(vercelToken),
       body: JSON.stringify({

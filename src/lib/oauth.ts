@@ -13,6 +13,16 @@ function requireKey(): Buffer {
 }
 
 export function callbackUrl(provider: Provider) { return `${baseUrl}/api/oauth/${provider}/callback`; }
+// Vercel has two different OAuth products. "Sign in with Vercel" only grants
+// identity permissions, while an Integration can be granted project and
+// deployment scopes. The installer deliberately uses the latter whenever an
+// integration slug is configured.
+export function usesVercelIntegration() { return Boolean(process.env.VERCEL_INTEGRATION_SLUG); }
+export function vercelApiUrl(path: string, teamId?: string) {
+  const url = new URL(path, "https://api.vercel.com");
+  if (teamId) url.searchParams.set("teamId", teamId);
+  return url.toString();
+}
 export function configured(provider: Provider) {
   const prefix = provider.toUpperCase();
   return Boolean(process.env[`${prefix}_OAUTH_CLIENT_ID`] && process.env[`${prefix}_OAUTH_CLIENT_SECRET`]);

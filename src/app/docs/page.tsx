@@ -1,0 +1,3 @@
+export default function DocsPage() {
+  return <main className="mx-auto max-w-3xl p-8 text-slate-900"><h1 className="text-3xl font-bold">Dhanushworks Installer</h1><p className="mt-6">Connect GitHub, Supabase, and Vercel through OAuth, select a theme, and create a standalone research portfolio. The installer creates a repository from the template, a Supabase database and private storage bucket, then a Vercel production deployment.</p><h2 className="mt-8 text-xl font-semibold">Vercel integration</h2><p className="mt-2">The Vercel connection is a private Vercel Integration with Projects, Deployments, Project Environment Variables, Team, and User scopes. It does not accept pasted Vercel tokens.</p></main>;
+}

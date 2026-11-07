@@ -1,0 +1,3 @@
+export default function PrivacyPage() {
+  return <main className="mx-auto max-w-3xl p-8 text-slate-900"><h1 className="text-3xl font-bold">Privacy Policy</h1><p className="mt-6">Dhanushworks Installer uses OAuth only to create the GitHub repository, Supabase project, and Vercel deployment that a user explicitly requests. Provider access tokens are encrypted in HttpOnly cookies and are never shown in the interface or sold to third parties.</p><p className="mt-4">Installation data is used solely to provision the selected project. Users can revoke provider access in GitHub, Supabase, or Vercel at any time.</p><p className="mt-8 text-sm text-slate-600">Last updated: November 7, 2026.</p></main>;
+}
