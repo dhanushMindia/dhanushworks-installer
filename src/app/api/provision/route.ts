@@ -58,29 +58,30 @@ function validTheme(value: unknown): value is "editorial" | "minimal" | "creativ
 }
 
 function extractServiceKey(payload: unknown): string | undefined {
-  if (payload && typeof payload === "object") {
-    const record = payload as Record<string, unknown>;
-    // The current Management API returns `api_key` for a revealed secret key;
-    // older API versions returned a legacy `service_role` shape. Support both.
-    if (typeof record.api_key === "string") return record.api_key;
-    if (typeof record.secret === "string") return record.secret;
-    if (typeof record.service_role === "string") return record.service_role;
-    for (const value of Object.values(record)) {
-      if (Array.isArray(value)) {
-        const key = value.find((item) => {
-          if (!item || typeof item !== "object") return false;
-          const entry = item as Record<string, unknown>;
-          return entry.name === "service_role" || entry.name === "secret" || entry.type === "secret";
-        }) as Record<string, unknown> | undefined;
-        if (key) {
-          for (const candidate of [key.api_key, key.key, key.value]) {
-            if (typeof candidate === "string") return candidate;
-          }
-        }
+  const visit = (value: unknown, isSecret = false): string | undefined => {
+    if (Array.isArray(value)) {
+      for (const item of value) { const found = visit(item); if (found) return found; }
+      return undefined;
+    }
+    if (!value || typeof value !== "object") return undefined;
+    const record = value as Record<string, unknown>;
+    const label = [record.name, record.type, record.role, record.kind].find((item): item is string => typeof item === "string") || "";
+    const secret = isSecret || /^(secret|service_role)$/i.test(label);
+    if (secret) {
+      for (const candidate of [record.api_key, record.key, record.value]) {
+        if (typeof candidate === "string" && candidate) return candidate;
       }
     }
-  }
-  return undefined;
+    // The Management API has returned an array, a `{ secret: {...} }` object,
+    // and a nested `keys` object across its key migrations. Traverse those
+    // documented shapes without ever serializing a revealed key in a response.
+    for (const [name, nested] of Object.entries(record)) {
+      const found = visit(nested, secret || /^(secret|service_role)$/i.test(name));
+      if (found) return found;
+    }
+    return undefined;
+  };
+  return visit(payload);
 }
 
 async function verifyProviders(githubToken: string, supabaseToken: string, vercelToken: string) {
