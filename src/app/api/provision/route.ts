@@ -284,7 +284,12 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({ id: "portfolio-media", name: "portfolio-media", public: false }),
     });
     if (!bucketResponse.ok && bucketResponse.status !== 409) {
-      throw new Error(`Supabase Storage bucket creation failed (${bucketResponse.status}): ${await providerError(bucketResponse)}`);
+      const message = await providerError(bucketResponse);
+      // Storage returns either 409 or a 400 "resource already exists" while
+      // its services settle. Both mean this idempotent setup step is complete.
+      if (!/resource already exists/i.test(message)) {
+        throw new Error(`Supabase Storage bucket creation failed (${bucketResponse.status}): ${message}`);
+      }
     }
     logs.push("Supabase database and private media bucket are ready.");
 
