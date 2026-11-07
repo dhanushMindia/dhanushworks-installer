@@ -283,7 +283,9 @@ export async function POST(request: NextRequest) {
       headers: { ...bearerHeaders(supabaseServiceKey), apikey: supabaseServiceKey },
       body: JSON.stringify({ id: "portfolio-media", name: "portfolio-media", public: false }),
     });
-    if (!bucketResponse.ok && bucketResponse.status !== 409) throw new Error("Supabase Storage bucket creation failed.");
+    if (!bucketResponse.ok && bucketResponse.status !== 409) {
+      throw new Error(`Supabase Storage bucket creation failed (${bucketResponse.status}): ${await providerError(bucketResponse)}`);
+    }
     logs.push("Supabase database and private media bucket are ready.");
 
     let repository: Repository;
