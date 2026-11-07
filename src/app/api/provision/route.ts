@@ -310,12 +310,45 @@ export async function POST(request: NextRequest) {
         }),
       });
       if (!generateResponse.ok) {
-        throw new Error(`GitHub template generation failed: ${await providerError(generateResponse)}`);
+        const message = await providerError(generateResponse);
+        // GitHub OAuth integrations can have repository-creation permission
+        // while the template endpoint itself is unavailable to the integration.
+        // Fall back to GitHub's first-party import flow: it creates the same
+        // repository from the public template without exposing any credential.
+        if (!/resource not accessible by integration/i.test(message)) {
+          throw new Error(`GitHub template generation failed: ${message}`);
+        }
+        const createResponse = await fetch("https://api.github.com/user/repos", {
+          method: "POST",
+          headers: githubHeaders(githubToken),
+          body: JSON.stringify({ name: githubRepoName, description: `Research portfolio — ${researchFocus}`, private: true, auto_init: false }),
+        });
+        if (!createResponse.ok) throw new Error(`GitHub repository creation failed: ${await providerError(createResponse)}`);
+        const created = await json<{ html_url: string; id: number; default_branch?: string }>(createResponse);
+        repository = { htmlUrl: created.html_url, id: created.id, defaultBranch: created.default_branch || "main" };
+        resumableJob = { ...resumableJob, repository };
+        const importResponse = await fetch(`https://api.github.com/repos/${github.login}/${githubRepoName}/import`, {
+          method: "PUT",
+          headers: githubHeaders(githubToken),
+          body: JSON.stringify({ vcs_url: "https://github.com/dhanushMindia/dhanushworks-template.git" }),
+        });
+        if (!importResponse.ok) throw new Error(`GitHub template import could not be started: ${await providerError(importResponse)}`);
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          await wait(3000);
+          const statusResponse = await fetch(`https://api.github.com/repos/${github.login}/${githubRepoName}/import`, { headers: githubHeaders(githubToken) });
+          if (!statusResponse.ok) throw new Error(`GitHub template import status failed: ${await providerError(statusResponse)}`);
+          const status = await json<{ status?: string; status_text?: string }>(statusResponse);
+          if (status.status === "complete") break;
+          if (status.status === "error" || status.status === "failed") throw new Error(`GitHub template import failed: ${status.status_text || "unknown error"}`);
+          if (attempt === 19) throw new Error("GitHub template import is still running. The installer will safely resume it shortly.");
+        }
+        logs.push("Repository created and populated from the template through GitHub import.");
+      } else {
+        const generated = await json<{ html_url: string; id: number; default_branch?: string }>(generateResponse);
+        repository = { htmlUrl: generated.html_url, id: generated.id, defaultBranch: generated.default_branch };
+        resumableJob = { ...resumableJob, repository };
+        logs.push("Repository generated successfully.");
       }
-      const generated = await json<{ html_url: string; id: number; default_branch?: string }>(generateResponse);
-      repository = { htmlUrl: generated.html_url, id: generated.id, defaultBranch: generated.default_branch };
-      resumableJob = { ...resumableJob, repository };
-      logs.push("Repository generated successfully.");
     }
 
     const databaseUrl = `postgresql://postgres:${encodeURIComponent(databasePassword)}@db.${supabaseProject.ref}.supabase.co:5432/postgres`;
