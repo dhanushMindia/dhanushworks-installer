@@ -120,7 +120,7 @@ async function waitForSupabaseProject(ref: string, token: string): Promise<boole
   // responses can make it unavailable even when the project services are ready.
   // After a short bounded wait, let the concrete API-key and Storage calls below
   // determine readiness; their failures are resumable without duplicating work.
-  for (let attempt = 0; attempt < 12; attempt += 1) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
     const response = await fetch(`https://api.supabase.com/v1/projects/${ref}/health`, {
       headers: bearerHeaders(token),
     });
@@ -128,15 +128,31 @@ async function waitForSupabaseProject(ref: string, token: string): Promise<boole
       const health = await json<Record<string, unknown>>(response);
       const services = Array.isArray(health.services) ? health.services as Array<Record<string, unknown>> : [];
       const projectStatus = typeof health.status === "string" ? health.status : "";
-      const isHealthyStatus = ["ACTIVE_HEALTHY", "HEALTHY", "ACTIVE"].includes(projectStatus);
-      const areServicesHealthy = services.length > 0 && services.every((service) => ["ACTIVE_HEALTHY", "HEALTHY", "ACTIVE"].includes(String(service.status)));
-      // Supabase has returned both top-level and per-service health shapes over
-      // time. Accept either positive signal; do not strand a healthy project.
-      if (isHealthyStatus || areServicesHealthy) return true;
+      const isHealthyStatus = projectStatus === "ACTIVE_HEALTHY";
+      const requiredServices = services.filter((service) => ["db", "database", "storage", "api"].includes(String(service.name || service.service || "").toLowerCase()));
+      const areRequiredServicesHealthy = requiredServices.length > 0 && requiredServices.every((service) => service.status === "ACTIVE_HEALTHY");
+      if (isHealthyStatus || areRequiredServicesHealthy) return true;
     }
     await wait(3000);
   }
   return false;
+}
+
+async function getSupabaseSecretKey(ref: string, token: string): Promise<string | undefined> {
+  const read = async () => {
+    const response = await fetch(`https://api.supabase.com/v1/projects/${ref}/api-keys?reveal=true`, { headers: bearerHeaders(token) });
+    if (!response.ok) throw new Error(`Unable to retrieve Supabase API keys: ${await providerError(response)}`);
+    return extractServiceKey(await json<unknown>(response));
+  };
+  const existing = await read();
+  if (existing) return existing;
+  const enable = await fetch(`https://api.supabase.com/v1/projects/${ref}/api-keys?reveal=true`, {
+    method: "POST",
+    headers: bearerHeaders(token),
+    body: JSON.stringify({ type: "secret", name: "default", secret_jwt_template: { role: "service_role" } }),
+  });
+  if (!enable.ok) throw new Error(`Unable to enable the Supabase secret API key: ${await providerError(enable)}`);
+  return extractServiceKey(await json<unknown>(enable)) || read();
 }
 
 type OAuthToken = { accessToken: string; refreshToken?: string; expiresAt?: number };
@@ -268,13 +284,9 @@ export async function POST(request: NextRequest) {
     resumableJob = { ...savedJob, projectRef: supabaseProject.ref, databasePassword, projectName };
     logs.push("Supabase project created. Checking database service readiness...");
     const healthConfirmed = await waitForSupabaseProject(supabaseProject.ref, supabaseToken);
-    if (!healthConfirmed) logs.push("Supabase health was not yet reported; continuing with its service APIs and preserving this installation if they are still initializing.");
+    if (!healthConfirmed) return respond({ success: false, code: "SUPABASE_NOT_READY", error: "Supabase is still provisioning its database and storage services. This installation is saved; retry once the project reports ACTIVE_HEALTHY." }, { status: 425 }, resumableJob);
 
-    const apiKeysResponse = await fetch(`https://api.supabase.com/v1/projects/${supabaseProject.ref}/api-keys?reveal=true`, {
-      headers: bearerHeaders(supabaseToken),
-    });
-    if (!apiKeysResponse.ok) throw new Error("Unable to retrieve a server-side Supabase API key for storage configuration.");
-    const supabaseServiceKey = extractServiceKey(await json<unknown>(apiKeysResponse));
+    const supabaseServiceKey = await getSupabaseSecretKey(supabaseProject.ref, supabaseToken);
     if (!supabaseServiceKey) throw new Error("Supabase did not provide a server-side API key. The project was created, but deployment has not started.");
 
     const supabaseUrl = `https://${supabaseProject.ref}.supabase.co`;
